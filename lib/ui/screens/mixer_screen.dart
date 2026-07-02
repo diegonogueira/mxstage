@@ -16,7 +16,6 @@ class _MixerScreenState extends State<MixerScreen> {
   MixerClient get _client => widget.client;
 
   bool _muted = false;
-  // Levels saved before mute so we can restore them
   final Map<int, double> _preMuteLevels = {};
 
   @override
@@ -35,14 +34,12 @@ class _MixerScreenState extends State<MixerScreen> {
 
   void _toggleMute() {
     if (_muted) {
-      // Restore saved levels
       for (final ch in _client.channels) {
         final saved = _preMuteLevels[ch.ch];
         if (saved != null) _client.setChannelSend(ch.ch, saved);
       }
       _preMuteLevels.clear();
     } else {
-      // Save current levels, then zero everything
       for (final ch in _client.channels) {
         _preMuteLevels[ch.ch] = ch.sendLevel;
         _client.setChannelSend(ch.ch, 0.0);
@@ -53,92 +50,91 @@ class _MixerScreenState extends State<MixerScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isLandscape = MediaQuery.orientationOf(context) == Orientation.landscape;
+
     return Scaffold(
-      appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(_client.mixerName ?? 'Mixer', style: const TextStyle(fontSize: 16)),
-            Text(
-              'Bus ${_client.busIndex}',
-              style: const TextStyle(fontSize: 12, color: Colors.white54),
-            ),
-          ],
-        ),
-        actions: [
-          // Mute toggle — saves levels and restores on second tap
-          IconButton(
-            icon: Icon(
-              _muted ? Icons.volume_off : Icons.volume_up,
-              color: _muted ? Colors.redAccent : Colors.white70,
-            ),
-            tooltip: _muted ? 'Restaurar volume' : 'Mute retorno',
-            onPressed: _toggleMute,
-          ),
-          IconButton(
-            icon: const Icon(Icons.link_off),
-            tooltip: 'Desconectar',
-            onPressed: () async {
-              await _client.disconnect();
-              if (context.mounted) Navigator.of(context).pop();
-            },
-          ),
-        ],
-      ),
+      backgroundColor: const Color(0xFF0A0A0A),
+      appBar: _buildAppBar(),
       body: Column(
         children: [
           _AutoMixBar(),
           Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              itemCount: _client.channels.length,
-              itemBuilder: (context, i) {
-                final ch = _client.channels[i];
-                return _ChannelRow(
-                  channel: ch,
-                  onLevelChanged: _muted
-                      ? null // sliders desabilitados enquanto mutado
-                      : (v) => _client.setChannelSend(ch.ch, v),
-                );
-              },
+            child: _FaderBoard(
+              channels: _client.channels,
+              muted: _muted,
+              isLandscape: isLandscape,
+              onLevelChanged: (ch, v) => _client.setChannelSend(ch, v),
             ),
           ),
         ],
       ),
     );
   }
+
+  AppBar _buildAppBar() {
+    return AppBar(
+      backgroundColor: const Color(0xFF0D0D0D),
+      title: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _client.mixerName ?? 'Mixer',
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+          ),
+          Text(
+            'Bus ${_client.busIndex}',
+            style: const TextStyle(fontSize: 11, color: Colors.white38),
+          ),
+        ],
+      ),
+      actions: [
+        IconButton(
+          icon: Icon(
+            _muted ? Icons.volume_off : Icons.volume_up,
+            color: _muted ? Colors.redAccent : Colors.white54,
+          ),
+          tooltip: _muted ? 'Restaurar volume' : 'Mute retorno',
+          onPressed: _toggleMute,
+        ),
+        IconButton(
+          icon: const Icon(Icons.link_off, color: Colors.white38),
+          tooltip: 'Desconectar',
+          onPressed: () async {
+            await _client.disconnect();
+            if (mounted) Navigator.of(context).pop();
+          },
+        ),
+      ],
+    );
+  }
 }
 
-/// Barra de Auto-Mix no topo da tela de mixer.
-/// Por enquanto desabilitada (disponível no M3).
 class _AutoMixBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: const Color(0xFF161616),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: const BoxDecoration(
+        color: Color(0xFF141414),
+        border: Border(bottom: BorderSide(color: Color(0xFF222222))),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
         children: [
-          const Icon(Icons.auto_fix_high, size: 18, color: Colors.white38),
+          const Icon(Icons.auto_fix_high, size: 16, color: Colors.white24),
           const SizedBox(width: 8),
-          const Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Auto-Mix',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.white54),
-                ),
-                Text(
-                  'Disponível após capturar referência (M2)',
-                  style: TextStyle(fontSize: 11, color: Colors.white24),
-                ),
-              ],
-            ),
+          const Text(
+            'Auto-Mix',
+            style: TextStyle(fontSize: 13, color: Colors.white38, fontWeight: FontWeight.w500),
           ),
+          const SizedBox(width: 4),
+          const Text(
+            '— disponível após M2',
+            style: TextStyle(fontSize: 11, color: Colors.white12),
+          ),
+          const Spacer(),
           Switch(
             value: false,
-            onChanged: null, // habilitado no M3
+            onChanged: null,
             activeThumbColor: Colors.tealAccent,
           ),
         ],
@@ -147,72 +143,135 @@ class _AutoMixBar extends StatelessWidget {
   }
 }
 
-class _ChannelRow extends StatelessWidget {
-  final ChannelInfo channel;
-  final ValueChanged<double>? onLevelChanged;
+// ── Fader board ──────────────────────────────────────────────────────────────
 
-  const _ChannelRow({required this.channel, required this.onLevelChanged});
+class _FaderBoard extends StatelessWidget {
+  final List<ChannelInfo> channels;
+  final bool muted;
+  final bool isLandscape;
+  final void Function(int ch, double level) onLevelChanged;
+
+  const _FaderBoard({
+    required this.channels,
+    required this.muted,
+    required this.isLandscape,
+    required this.onLevelChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Channel strip width adapts to orientation
+    final stripW = isLandscape ? 72.0 : 80.0;
+
+    return ScrollConfiguration(
+      behavior: const _NoGlowScroll(),
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+        itemCount: channels.length,
+        separatorBuilder: (context, index) => const SizedBox(
+          width: 1,
+          child: VerticalDivider(color: Color(0xFF1E1E1E), width: 1),
+        ),
+        itemBuilder: (context, i) {
+          final ch = channels[i];
+          return _ChannelStrip(
+            channel: ch,
+            width: stripW,
+            muted: muted,
+            onLevelChanged: (v) => onLevelChanged(ch.ch, v),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _ChannelStrip extends StatelessWidget {
+  final ChannelInfo channel;
+  final double width;
+  final bool muted;
+  final ValueChanged<double> onLevelChanged;
+
+  const _ChannelStrip({
+    required this.channel,
+    required this.width,
+    required this.muted,
+    required this.onLevelChanged,
+  });
 
   @override
   Widget build(BuildContext context) {
     final db = floatToDb(channel.sendLevel);
-    final dbLabel = db <= -89 ? '-∞' : '${db.toStringAsFixed(1)} dB';
-    final disabled = onLevelChanged == null;
+    final dbLabel = db <= -89 ? '-∞' : db.toStringAsFixed(1);
+    final active = !muted && channel.sendLevel > 0.001;
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-      child: Row(
+    return SizedBox(
+      width: width,
+      child: Column(
         children: [
-          SizedBox(
-            width: 28,
-            child: Text(
-              channel.ch.toString().padLeft(2, '0'),
-              style: TextStyle(
-                fontSize: 11,
-                color: disabled ? Colors.white12 : Colors.white38,
-                fontFeatures: const [FontFeature.tabularFigures()],
-              ),
+          // Channel number + name header
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Column(
+              children: [
+                Text(
+                  channel.ch.toString().padLeft(2, '0'),
+                  style: const TextStyle(
+                    fontSize: 9,
+                    color: Colors.white24,
+                    letterSpacing: 1,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  channel.name,
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: muted ? Colors.white12 : Colors.white70,
+                    height: 1.2,
+                  ),
+                ),
+              ],
             ),
           ),
-          SizedBox(
-            width: 100,
-            child: Text(
-              channel.name,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 14,
-                color: disabled ? Colors.white24 : Colors.white,
-              ),
-            ),
-          ),
+
+          // Vertical fader — fills remaining space
           Expanded(
-            child: SliderTheme(
-              data: SliderTheme.of(context).copyWith(
-                activeTrackColor: disabled ? Colors.white12 : _trackColor(channel.sendLevel),
-                inactiveTrackColor: const Color(0xFF2A2A2A),
-                thumbColor: disabled ? Colors.white24 : Colors.white,
-                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
-                trackHeight: 4,
-                overlayShape: const RoundSliderOverlayShape(overlayRadius: 16),
-              ),
-              child: Slider(
-                value: channel.sendLevel,
-                min: 0,
-                max: 1,
-                onChanged: onLevelChanged,
-              ),
+            child: _VerticalFader(
+              value: channel.sendLevel,
+              muted: muted,
+              onChanged: muted ? null : onLevelChanged,
             ),
           ),
-          SizedBox(
-            width: 64,
+
+          // dB label footer
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 6),
             child: Text(
               dbLabel,
-              textAlign: TextAlign.right,
+              textAlign: TextAlign.center,
               style: TextStyle(
-                fontSize: 12,
-                color: disabled ? Colors.white12 : _dbColor(db),
+                fontSize: 11,
+                color: muted ? Colors.white12 : _dbColor(db),
                 fontFeatures: const [FontFeature.tabularFigures()],
               ),
+            ),
+          ),
+
+          // Active indicator dot
+          Container(
+            width: 6,
+            height: 6,
+            margin: const EdgeInsets.only(bottom: 8),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: active ? Colors.tealAccent : const Color(0xFF222222),
             ),
           ),
         ],
@@ -220,15 +279,56 @@ class _ChannelRow extends StatelessWidget {
     );
   }
 
-  Color _trackColor(double level) {
-    if (level > 0.85) return Colors.redAccent;
-    if (level > 0.7) return Colors.orangeAccent;
-    return Colors.tealAccent;
-  }
-
   Color _dbColor(double db) {
     if (db > 0) return Colors.redAccent;
-    if (db > -10) return Colors.orangeAccent;
-    return Colors.white70;
+    if (db > -6) return Colors.orangeAccent;
+    return Colors.white54;
+  }
+}
+
+class _VerticalFader extends StatelessWidget {
+  final double value;
+  final bool muted;
+  final ValueChanged<double>? onChanged;
+
+  const _VerticalFader({required this.value, required this.muted, this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return RotatedBox(
+      quarterTurns: 3, // min=bottom, max=top
+      child: SliderTheme(
+        data: SliderTheme.of(context).copyWith(
+          activeTrackColor: muted ? const Color(0xFF222222) : _trackColor(value),
+          inactiveTrackColor: const Color(0xFF1A1A1A),
+          thumbColor: muted ? const Color(0xFF333333) : Colors.white,
+          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 10),
+          trackHeight: 3,
+          overlayShape: const RoundSliderOverlayShape(overlayRadius: 20),
+          overlayColor: Colors.white10,
+        ),
+        child: Slider(
+          value: value,
+          min: 0,
+          max: 1,
+          onChanged: onChanged,
+        ),
+      ),
+    );
+  }
+
+  Color _trackColor(double v) {
+    if (v > 0.88) return Colors.redAccent;
+    if (v > 0.75) return Colors.orangeAccent;
+    return Colors.tealAccent;
+  }
+}
+
+class _NoGlowScroll extends ScrollBehavior {
+  const _NoGlowScroll();
+
+  @override
+  Widget buildOverscrollIndicator(BuildContext context, Widget child, ScrollableDetails details) {
+    return child;
   }
 }
