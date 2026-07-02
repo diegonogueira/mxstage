@@ -4,7 +4,6 @@ import 'package:flutter/foundation.dart';
 
 import '../osc/osc_codec.dart';
 import '../osc/x32_protocol.dart';
-import '../state/reference.dart';
 import 'meter_stream.dart';
 
 class DiscoveredMixer {
@@ -49,7 +48,6 @@ class MixerClient extends ChangeNotifier {
   bool _hasPendingMeterUpdate = false;
 
   final _meters = MeterStream();
-  Reference? _reference;
 
   final List<DiscoveredMixer> discovered = [];
   final List<ChannelInfo> channels = List.generate(
@@ -63,7 +61,6 @@ class MixerClient extends ChangeNotifier {
   bool get isConnected => _connected;
   bool get isDiscovering => _discovering;
   int get busIndex => _busIndex;
-  Reference? get reference => _reference;
 
   /// Fast-smoothed dB for display (~300ms EMA). 0-based channel index.
   double meterDisplayDb(int channelIndex) => _meters.displayDb(channelIndex);
@@ -173,23 +170,6 @@ class MixerClient extends ChangeNotifier {
     final address =
         '/ch/${ch.toString().padLeft(2, '0')}/mix/${_busIndex.toString().padLeft(2, '0')}/level';
     _send(encodeOsc(address, ',f', [level]));
-    notifyListeners();
-  }
-
-  // ── Reference capture ──────────────────────────────────────────────────────
-
-  /// Captures the current slow-smoothed levels as a reference balance.
-  /// Returns false if no active channels were found (nothing to capture).
-  bool captureReference({double gateDb = -45}) {
-    final ref = Reference.capture(_meters.engineSnapshot, gateDb: gateDb);
-    if (ref == null) return false;
-    _reference = ref;
-    notifyListeners();
-    return true;
-  }
-
-  void clearReference() {
-    _reference = null;
     notifyListeners();
   }
 

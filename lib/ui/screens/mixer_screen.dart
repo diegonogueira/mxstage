@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../../mixer/mixer_client.dart';
 import '../../osc/osc_codec.dart';
-import '../../state/reference.dart';
 
 class MixerScreen extends StatefulWidget {
   final MixerClient client;
@@ -49,18 +48,6 @@ class _MixerScreenState extends State<MixerScreen> {
     setState(() => _muted = !_muted);
   }
 
-  void _captureReference() {
-    final ok = _client.captureReference();
-    if (!ok && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Nenhum canal ativo detectado. Toque na mesa e tente novamente.'),
-          duration: Duration(seconds: 3),
-        ),
-      );
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final isLandscape = MediaQuery.orientationOf(context) == Orientation.landscape;
@@ -70,10 +57,7 @@ class _MixerScreenState extends State<MixerScreen> {
       appBar: _buildAppBar(),
       body: Column(
         children: [
-          _AutoMixBar(
-            reference: _client.reference,
-            onCapture: _captureReference,
-          ),
+          const _AutoMixBar(),
           Expanded(
             child: _FaderBoard(
               channels: _client.channels,
@@ -129,15 +113,10 @@ class _MixerScreenState extends State<MixerScreen> {
 // ── Auto-Mix bar ─────────────────────────────────────────────────────────────
 
 class _AutoMixBar extends StatelessWidget {
-  final Reference? reference;
-  final VoidCallback onCapture;
-
-  const _AutoMixBar({required this.reference, required this.onCapture});
+  const _AutoMixBar();
 
   @override
   Widget build(BuildContext context) {
-    final hasRef = reference != null;
-
     return Container(
       decoration: const BoxDecoration(
         color: Color(0xFF141414),
@@ -146,7 +125,6 @@ class _AutoMixBar extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Row(
         children: [
-          // Auto-Mix toggle (enabled in M3)
           const Icon(Icons.auto_fix_high, size: 16, color: Colors.white24),
           const SizedBox(width: 6),
           const Text(
@@ -155,11 +133,9 @@ class _AutoMixBar extends StatelessWidget {
           ),
           Switch(
             value: false,
-            onChanged: null, // M3
+            onChanged: null, // habilitado no M3
             activeThumbColor: Colors.tealAccent,
           ),
-
-          // Checklist de pré-requisitos
           IconButton(
             icon: const Icon(Icons.help_outline, size: 18, color: Colors.white24),
             tooltip: 'Pré-requisitos',
@@ -167,51 +143,9 @@ class _AutoMixBar extends StatelessWidget {
             constraints: const BoxConstraints(),
             onPressed: () => _showChecklist(context),
           ),
-
           const Spacer(),
-
-          // Reference state + capture button
-          if (hasRef)
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    'ref capturada às ${reference!.capturedAtLabel}',
-                    style: const TextStyle(fontSize: 10, color: Colors.tealAccent),
-                  ),
-                  Text(
-                    '${reference!.activeCount} canais ativos',
-                    style: const TextStyle(fontSize: 9, color: Colors.white24),
-                  ),
-                ],
-              ),
-            ),
-
-          FilledButton.tonal(
-            style: FilledButton.styleFrom(
-              backgroundColor: hasRef ? const Color(0xFF1A2A2A) : Colors.tealAccent.withAlpha(30),
-              foregroundColor: Colors.tealAccent,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              minimumSize: Size.zero,
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-                side: BorderSide(color: Colors.tealAccent.withAlpha(hasRef ? 80 : 50)),
-              ),
-            ),
-            onPressed: onCapture,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.radio_button_checked, size: 14),
-                const SizedBox(width: 4),
-                Text(hasRef ? 'Recapturar' : 'Capturar ref', style: const TextStyle(fontSize: 12)),
-              ],
-            ),
-          ),
+          // Seletor de gênero — habilitado no M3
+          _GenreChip(label: 'Gospel', enabled: false),
         ],
       ),
     );
@@ -225,6 +159,42 @@ class _AutoMixBar extends StatelessWidget {
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (_) => const _PrereqSheet(),
+    );
+  }
+}
+
+// ── Genre chip placeholder ────────────────────────────────────────────────────
+
+class _GenreChip extends StatelessWidget {
+  final String label;
+  final bool enabled;
+
+  const _GenreChip({required this.label, required this.enabled});
+
+  @override
+  Widget build(BuildContext context) {
+    return Opacity(
+      opacity: enabled ? 1.0 : 0.35,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          border: Border.all(color: Colors.tealAccent.withAlpha(60)),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.music_note, size: 13, color: Colors.tealAccent),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: const TextStyle(fontSize: 12, color: Colors.tealAccent),
+            ),
+            const SizedBox(width: 2),
+            const Icon(Icons.arrow_drop_down, size: 16, color: Colors.tealAccent),
+          ],
+        ),
+      ),
     );
   }
 }
