@@ -15,6 +15,10 @@ class MixerScreen extends StatefulWidget {
 class _MixerScreenState extends State<MixerScreen> {
   MixerClient get _client => widget.client;
 
+  bool _muted = false;
+  // Levels saved before mute so we can restore them
+  final Map<int, double> _preMuteLevels = {};
+
   @override
   void initState() {
     super.initState();
@@ -28,6 +32,24 @@ class _MixerScreenState extends State<MixerScreen> {
   }
 
   void _onClientChange() => setState(() {});
+
+  void _toggleMute() {
+    if (_muted) {
+      // Restore saved levels
+      for (final ch in _client.channels) {
+        final saved = _preMuteLevels[ch.ch];
+        if (saved != null) _client.setChannelSend(ch.ch, saved);
+      }
+      _preMuteLevels.clear();
+    } else {
+      // Save current levels, then zero everything
+      for (final ch in _client.channels) {
+        _preMuteLevels[ch.ch] = ch.sendLevel;
+        _client.setChannelSend(ch.ch, 0.0);
+      }
+    }
+    setState(() => _muted = !_muted);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -44,11 +66,14 @@ class _MixerScreenState extends State<MixerScreen> {
           ],
         ),
         actions: [
-          // Emergency mute button — always visible
+          // Mute toggle — saves levels and restores on second tap
           IconButton(
-            icon: const Icon(Icons.volume_off, color: Colors.redAccent),
-            tooltip: 'Mute retorno',
-            onPressed: _muteAll,
+            icon: Icon(
+              _muted ? Icons.volume_off : Icons.volume_up,
+              color: _muted ? Colors.redAccent : Colors.white70,
+            ),
+            tooltip: _muted ? 'Restaurar volume' : 'Mute retorno',
+            onPressed: _toggleMute,
           ),
           IconButton(
             icon: const Icon(Icons.link_off),
@@ -60,30 +85,71 @@ class _MixerScreenState extends State<MixerScreen> {
           ),
         ],
       ),
-      body: ListView.builder(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        itemCount: _client.channels.length,
-        itemBuilder: (context, i) {
-          final ch = _client.channels[i];
-          return _ChannelRow(
-            channel: ch,
-            onLevelChanged: (v) => _client.setChannelSend(ch.ch, v),
-          );
-        },
+      body: Column(
+        children: [
+          _AutoMixBar(),
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              itemCount: _client.channels.length,
+              itemBuilder: (context, i) {
+                final ch = _client.channels[i];
+                return _ChannelRow(
+                  channel: ch,
+                  onLevelChanged: _muted
+                      ? null // sliders desabilitados enquanto mutado
+                      : (v) => _client.setChannelSend(ch.ch, v),
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
+}
 
-  void _muteAll() {
-    for (final ch in _client.channels) {
-      _client.setChannelSend(ch.ch, 0.0);
-    }
+/// Barra de Auto-Mix no topo da tela de mixer.
+/// Por enquanto desabilitada (disponível no M3).
+class _AutoMixBar extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: const Color(0xFF161616),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Row(
+        children: [
+          const Icon(Icons.auto_fix_high, size: 18, color: Colors.white38),
+          const SizedBox(width: 8),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Auto-Mix',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.white54),
+                ),
+                Text(
+                  'Disponível após capturar referência (M2)',
+                  style: TextStyle(fontSize: 11, color: Colors.white24),
+                ),
+              ],
+            ),
+          ),
+          Switch(
+            value: false,
+            onChanged: null, // habilitado no M3
+            activeThumbColor: Colors.tealAccent,
+          ),
+        ],
+      ),
+    );
   }
 }
 
 class _ChannelRow extends StatelessWidget {
   final ChannelInfo channel;
-  final ValueChanged<double> onLevelChanged;
+  final ValueChanged<double>? onLevelChanged;
 
   const _ChannelRow({required this.channel, required this.onLevelChanged});
 
@@ -91,38 +157,40 @@ class _ChannelRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final db = floatToDb(channel.sendLevel);
     final dbLabel = db <= -89 ? '-∞' : '${db.toStringAsFixed(1)} dB';
+    final disabled = onLevelChanged == null;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
       child: Row(
         children: [
-          // Channel number
           SizedBox(
             width: 28,
             child: Text(
               channel.ch.toString().padLeft(2, '0'),
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 11,
-                color: Colors.white38,
-                fontFeatures: [FontFeature.tabularFigures()],
+                color: disabled ? Colors.white12 : Colors.white38,
+                fontFeatures: const [FontFeature.tabularFigures()],
               ),
             ),
           ),
-          // Channel name
           SizedBox(
             width: 100,
             child: Text(
               channel.name,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 14),
+              style: TextStyle(
+                fontSize: 14,
+                color: disabled ? Colors.white24 : Colors.white,
+              ),
             ),
           ),
-          // Fader slider
           Expanded(
             child: SliderTheme(
               data: SliderTheme.of(context).copyWith(
-                activeTrackColor: _trackColor(channel.sendLevel),
-                thumbColor: Colors.white,
+                activeTrackColor: disabled ? Colors.white12 : _trackColor(channel.sendLevel),
+                inactiveTrackColor: const Color(0xFF2A2A2A),
+                thumbColor: disabled ? Colors.white24 : Colors.white,
                 thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
                 trackHeight: 4,
                 overlayShape: const RoundSliderOverlayShape(overlayRadius: 16),
@@ -135,7 +203,6 @@ class _ChannelRow extends StatelessWidget {
               ),
             ),
           ),
-          // dB label
           SizedBox(
             width: 64,
             child: Text(
@@ -143,7 +210,7 @@ class _ChannelRow extends StatelessWidget {
               textAlign: TextAlign.right,
               style: TextStyle(
                 fontSize: 12,
-                color: _dbColor(db),
+                color: disabled ? Colors.white12 : _dbColor(db),
                 fontFeatures: const [FontFeature.tabularFigures()],
               ),
             ),

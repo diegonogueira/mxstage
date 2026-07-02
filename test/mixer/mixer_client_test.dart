@@ -1,8 +1,4 @@
-/// Integration test for MixerClient — M1 acceptance criterion.
-///
-/// Starts a minimal fake X32 socket, connects the client, and asserts
-/// that setChannelSend writes the correct /ch/NN/mix/MM/level OSC message.
-
+// Integration test: MixerClient writes correct /ch/NN/mix/MM/level OSC messages.
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mxstage/mixer/mixer_client.dart';
