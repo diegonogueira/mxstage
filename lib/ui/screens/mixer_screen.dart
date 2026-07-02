@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../mixer/mixer_client.dart';
 import '../../osc/osc_codec.dart';
+import '../../state/genre_presets.dart';
 
 class MixerScreen extends StatefulWidget {
   final MixerClient client;
@@ -57,7 +58,7 @@ class _MixerScreenState extends State<MixerScreen> {
       appBar: _buildAppBar(),
       body: Column(
         children: [
-          const _AutoMixBar(),
+          _AutoMixBar(client: _client),
           Expanded(
             child: _FaderBoard(
               channels: _client.channels,
@@ -113,10 +114,14 @@ class _MixerScreenState extends State<MixerScreen> {
 // ── Auto-Mix bar ─────────────────────────────────────────────────────────────
 
 class _AutoMixBar extends StatelessWidget {
-  const _AutoMixBar();
+  final MixerClient client;
+
+  const _AutoMixBar({required this.client});
 
   @override
   Widget build(BuildContext context) {
+    final active = client.autoMixActive;
+
     return Container(
       decoration: const BoxDecoration(
         color: Color(0xFF141414),
@@ -125,15 +130,23 @@ class _AutoMixBar extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Row(
         children: [
-          const Icon(Icons.auto_fix_high, size: 16, color: Colors.white24),
+          Icon(
+            Icons.auto_fix_high,
+            size: 16,
+            color: active ? Colors.tealAccent : Colors.white24,
+          ),
           const SizedBox(width: 6),
-          const Text(
+          Text(
             'Auto-Mix',
-            style: TextStyle(fontSize: 13, color: Colors.white38, fontWeight: FontWeight.w500),
+            style: TextStyle(
+              fontSize: 13,
+              color: active ? Colors.tealAccent : Colors.white38,
+              fontWeight: FontWeight.w500,
+            ),
           ),
           Switch(
-            value: false,
-            onChanged: null, // habilitado no M3
+            value: active,
+            onChanged: (v) => v ? client.enableAutoMix() : client.disableAutoMix(),
             activeThumbColor: Colors.tealAccent,
           ),
           IconButton(
@@ -144,8 +157,7 @@ class _AutoMixBar extends StatelessWidget {
             onPressed: () => _showChecklist(context),
           ),
           const Spacer(),
-          // Seletor de gênero — habilitado no M3
-          _GenreChip(label: 'Gospel', enabled: false),
+          _GenreDropdown(client: client),
         ],
       ),
     );
@@ -163,36 +175,58 @@ class _AutoMixBar extends StatelessWidget {
   }
 }
 
-// ── Genre chip placeholder ────────────────────────────────────────────────────
+// ── Genre dropdown ────────────────────────────────────────────────────────────
 
-class _GenreChip extends StatelessWidget {
-  final String label;
-  final bool enabled;
+class _GenreDropdown extends StatelessWidget {
+  final MixerClient client;
 
-  const _GenreChip({required this.label, required this.enabled});
+  const _GenreDropdown({required this.client});
 
   @override
   Widget build(BuildContext context) {
-    return Opacity(
-      opacity: enabled ? 1.0 : 0.35,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-          border: Border.all(color: Colors.tealAccent.withAlpha(60)),
-          borderRadius: BorderRadius.circular(20),
+    final active = client.autoMixActive;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+      decoration: BoxDecoration(
+        border: Border.all(
+          color: active
+              ? Colors.tealAccent.withAlpha(120)
+              : Colors.tealAccent.withAlpha(40),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.music_note, size: 13, color: Colors.tealAccent),
-            const SizedBox(width: 4),
-            Text(
-              label,
-              style: const TextStyle(fontSize: 12, color: Colors.tealAccent),
-            ),
-            const SizedBox(width: 2),
-            const Icon(Icons.arrow_drop_down, size: 16, color: Colors.tealAccent),
-          ],
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<Genre>(
+          value: client.genre,
+          isDense: true,
+          icon: const Icon(Icons.arrow_drop_down, size: 16, color: Colors.tealAccent),
+          dropdownColor: const Color(0xFF1A1A1A),
+          // Disable while Auto-Mix is active — genre switch mid-session would
+          // invalidate the clamp references baked in at activate() time.
+          onChanged: active
+              ? null
+              : (g) {
+                  if (g != null) client.setGenre(g);
+                },
+          items: Genre.values
+              .map(
+                (g) => DropdownMenuItem(
+                  value: g,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.music_note, size: 13, color: Colors.tealAccent),
+                      const SizedBox(width: 4),
+                      Text(
+                        g.label,
+                        style: const TextStyle(fontSize: 12, color: Colors.tealAccent),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+              .toList(),
         ),
       ),
     );

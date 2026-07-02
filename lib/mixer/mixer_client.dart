@@ -2,8 +2,12 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 
+import '../engine/auto_mix_engine.dart';
 import '../osc/osc_codec.dart';
 import '../osc/x32_protocol.dart';
+import '../state/channel_mapper.dart';
+import '../state/genre_presets.dart';
+import '../state/instrument_type.dart';
 import 'meter_stream.dart';
 
 class DiscoveredMixer {
@@ -24,8 +28,16 @@ class ChannelInfo {
   final int ch; // 1..32
   final String name;
   double sendLevel; // 0..1 X32 float
+  int? iconId;
+  int? colorId;
 
-  ChannelInfo({required this.ch, required this.name, this.sendLevel = 0.75});
+  ChannelInfo({
+    required this.ch,
+    required this.name,
+    this.sendLevel = 0.75,
+    this.iconId,
+    this.colorId,
+  });
 }
 
 /// Handles all UDP/OSC communication with the X32.
@@ -33,11 +45,14 @@ class ChannelInfo {
 /// Meter updates arrive at ~20 Hz but notifyListeners() is throttled to
 /// 10 Hz via [_meterNotifyTimer] so the UI stays smooth without rebuilding
 /// at full packet rate.
+///
+/// Auto-Mix runs on a separate 1-second tick using slow-smoothed meters.
 class MixerClient extends ChangeNotifier {
   RawDatagramSocket? _socket;
   Timer? _renewTimer;
   Timer? _discoveryTimer;
   Timer? _meterNotifyTimer;
+  Timer? _engineTimer;
 
   String? _mixerIp;
   String? _mixerName;
@@ -48,12 +63,16 @@ class MixerClient extends ChangeNotifier {
   bool _hasPendingMeterUpdate = false;
 
   final _meters = MeterStream();
+  final _engine = AutoMixEngine();
+  Genre _genre = Genre.gospel;
 
   final List<DiscoveredMixer> discovered = [];
   final List<ChannelInfo> channels = List.generate(
     kInputChannelCount,
     (i) => ChannelInfo(ch: i + 1, name: 'Ch ${i + 1}'),
   );
+  final List<InstrumentType> instruments =
+      List.filled(kInputChannelCount, InstrumentType.unknown);
 
   String? get mixerIp => _mixerIp;
   String? get mixerName => _mixerName;
@@ -61,6 +80,8 @@ class MixerClient extends ChangeNotifier {
   bool get isConnected => _connected;
   bool get isDiscovering => _discovering;
   int get busIndex => _busIndex;
+  Genre get genre => _genre;
+  bool get autoMixActive => _engine.isActive;
 
   /// Fast-smoothed dB for display (~300ms EMA). 0-based channel index.
   double meterDisplayDb(int channelIndex) => _meters.displayDb(channelIndex);
@@ -68,6 +89,38 @@ class MixerClient extends ChangeNotifier {
   set busIndex(int v) {
     _busIndex = v.clamp(1, kMixBusCount);
     notifyListeners();
+  }
+
+  void setGenre(Genre g) {
+    _genre = g;
+    notifyListeners();
+  }
+
+  void enableAutoMix() {
+    final sends = {for (final ch in channels) ch.ch: ch.sendLevel};
+    _engine.activate(sends);
+    _engineTimer?.cancel();
+    _engineTimer = Timer.periodic(
+      Duration(milliseconds: kCorrectionIntervalMs),
+      _engineTick,
+    );
+    notifyListeners();
+  }
+
+  void disableAutoMix() {
+    _engine.deactivate();
+    _engineTimer?.cancel();
+    _engineTimer = null;
+    notifyListeners();
+  }
+
+  void _engineTick(Timer _) {
+    final preset = kGenrePresets[_genre]!;
+    final meterDb = _meters.engineSnapshot;
+    final cmds = _engine.update(meterDb, instruments, preset);
+    for (final cmd in cmds) {
+      setChannelSend(cmd.ch, cmd.levelFloat);
+    }
   }
 
   // ── Discovery ─────────────────────────────────────────────────────────────
@@ -128,7 +181,7 @@ class MixerClient extends ChangeNotifier {
     _send(encodeOsc('/xinfo', ',', []));
     _socket!.listen(_onData);
 
-    await _fetchChannelNames();
+    await _fetchChannelConfig();
 
     // Subscribe to meters and start throttled UI refresh
     _subscribeMeter();
@@ -144,6 +197,7 @@ class MixerClient extends ChangeNotifier {
   }
 
   Future<void> disconnect() async {
+    disableAutoMix();
     _meterNotifyTimer?.cancel();
     _meterNotifyTimer = null;
     _renewTimer?.cancel();
@@ -185,11 +239,13 @@ class MixerClient extends ChangeNotifier {
     );
   }
 
-  Future<void> _fetchChannelNames() async {
+  Future<void> _fetchChannelConfig() async {
     if (_socket == null) return;
     for (var ch = 1; ch <= kInputChannelCount; ch++) {
-      final address = '/ch/${ch.toString().padLeft(2, '0')}/config/name';
-      _send(encodeOsc(address, ',', []));
+      final pad = ch.toString().padLeft(2, '0');
+      _send(encodeOsc('/ch/$pad/config/name', ',', []));
+      _send(encodeOsc('/ch/$pad/config/icon', ',', []));
+      _send(encodeOsc('/ch/$pad/config/color', ',', []));
       await Future.delayed(const Duration(milliseconds: 20));
     }
     await Future.delayed(const Duration(milliseconds: 500));
@@ -215,8 +271,57 @@ class MixerClient extends ChangeNotifier {
       final ch = int.parse(nameMatch.group(1)!);
       final idx = ch - 1;
       if (idx >= 0 && idx < channels.length) {
-        channels[idx] =
-            ChannelInfo(ch: ch, name: msg.args[0] as String, sendLevel: channels[idx].sendLevel);
+        final prev = channels[idx];
+        channels[idx] = ChannelInfo(
+          ch: ch,
+          name: msg.args[0] as String,
+          sendLevel: prev.sendLevel,
+          iconId: prev.iconId,
+          colorId: prev.colorId,
+        );
+        _reidentify(idx);
+        notifyListeners();
+      }
+      return;
+    }
+
+    // Icon response (int)
+    final iconMatch = RegExp(r'^/ch/(\d{2})/config/icon$').firstMatch(msg.address);
+    if (iconMatch != null && msg.args.isNotEmpty) {
+      final ch = int.parse(iconMatch.group(1)!);
+      final idx = ch - 1;
+      if (idx >= 0 && idx < channels.length) {
+        final prev = channels[idx];
+        final iconId = (msg.args[0] as num).toInt();
+        channels[idx] = ChannelInfo(
+          ch: ch,
+          name: prev.name,
+          sendLevel: prev.sendLevel,
+          iconId: iconId,
+          colorId: prev.colorId,
+        );
+        _reidentify(idx);
+        notifyListeners();
+      }
+      return;
+    }
+
+    // Color response (int 0-7)
+    final colorMatch = RegExp(r'^/ch/(\d{2})/config/color$').firstMatch(msg.address);
+    if (colorMatch != null && msg.args.isNotEmpty) {
+      final ch = int.parse(colorMatch.group(1)!);
+      final idx = ch - 1;
+      if (idx >= 0 && idx < channels.length) {
+        final prev = channels[idx];
+        final colorId = (msg.args[0] as num).toInt();
+        channels[idx] = ChannelInfo(
+          ch: ch,
+          name: prev.name,
+          sendLevel: prev.sendLevel,
+          iconId: prev.iconId,
+          colorId: colorId,
+        );
+        _reidentify(idx);
         notifyListeners();
       }
       return;
@@ -232,6 +337,15 @@ class MixerClient extends ChangeNotifier {
         _hasPendingMeterUpdate = true;
       }
     }
+  }
+
+  void _reidentify(int idx) {
+    final ch = channels[idx];
+    instruments[idx] = ChannelMapper.identify(
+      name: ch.name,
+      iconId: ch.iconId,
+      colorId: ch.colorId,
+    );
   }
 
   void _send(Uint8List data) {

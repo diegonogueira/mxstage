@@ -1,0 +1,41 @@
+enum InstrumentType {
+  leadVocal,
+  backingVocal,
+  guitar,
+  bass,
+  keys,
+  piano,
+  acoustic,
+  drums,
+  kick,
+  snare,
+  hihat,
+  overhead,
+  percussion,
+  sax,
+  brass,
+  strings,
+  unknown,
+}
+
+extension InstrumentTypeLabel on InstrumentType {
+  String get label => switch (this) {
+        InstrumentType.leadVocal => 'Voz Lead',
+        InstrumentType.backingVocal => 'Vocal BG',
+        InstrumentType.guitar => 'Guitarra',
+        InstrumentType.bass => 'Baixo',
+        InstrumentType.keys => 'Teclado',
+        InstrumentType.piano => 'Piano',
+        InstrumentType.acoustic => 'Violão',
+        InstrumentType.drums => 'Bateria',
+        InstrumentType.kick => 'Bumbo',
+        InstrumentType.snare => 'Caixa',
+        InstrumentType.hihat => 'Hi-Hat',
+        InstrumentType.overhead => 'Overhead',
+        InstrumentType.percussion => 'Percussão',
+        InstrumentType.sax => 'Sax',
+        InstrumentType.brass => 'Metais',
+        InstrumentType.strings => 'Cordas',
+        InstrumentType.unknown => 'Desconhecido',
+      };
+}
