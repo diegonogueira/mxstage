@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 import 'package:test/test.dart';
 
-import '../../lib/osc/osc_codec.dart';
+import 'package:mxstage/osc/osc_codec.dart';
 
 void main() {
   group('encodeOsc / decodeOsc round-trip', () {
