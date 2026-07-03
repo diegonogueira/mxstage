@@ -1,11 +1,12 @@
 import 'instrument_type.dart';
 
-enum Genre { gospel, worship, rock, groove, jazz, blues, rb, acoustic }
+enum Genre { gospel, worship, pop, rock, groove, jazz, blues, rb, acoustic }
 
 extension GenreLabel on Genre {
   String get label => switch (this) {
         Genre.gospel => 'Gospel',
         Genre.worship => 'Worship',
+        Genre.pop => 'Pop',
         Genre.rock => 'Rock',
         Genre.groove => 'Groove',
         Genre.jazz => 'Jazz',
@@ -127,6 +128,30 @@ const Map<Genre, GenrePreset> kGenrePresets = {
       InstrumentType.hihat: -10.0,
       InstrumentType.overhead: -11.0,
       InstrumentType.unknown: -8.0,
+    },
+  ),
+  Genre.pop: GenrePreset(
+    genre: Genre.pop,
+    // Pop moderno: voz muito acima, backing vocals próximos, bateria presente
+    // mas sem dominar, guitars e synths equilibrados, produção limpa.
+    relativeDb: {
+      InstrumentType.leadVocal: 0.0,
+      InstrumentType.backingVocal: -4.0,
+      InstrumentType.keys: -6.0,
+      InstrumentType.bass: -7.0,
+      InstrumentType.guitar: -7.0,
+      InstrumentType.kick: -8.0,
+      InstrumentType.snare: -8.0,
+      InstrumentType.piano: -8.0,
+      InstrumentType.strings: -7.0,
+      InstrumentType.acoustic: -8.0,
+      InstrumentType.sax: -8.0,
+      InstrumentType.brass: -9.0,
+      InstrumentType.drums: -9.0,
+      InstrumentType.hihat: -12.0,
+      InstrumentType.overhead: -12.0,
+      InstrumentType.percussion: -10.0,
+      InstrumentType.unknown: -9.0,
     },
   ),
   Genre.gospel: GenrePreset(
