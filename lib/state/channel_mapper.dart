@@ -83,7 +83,7 @@ class ChannelMapper {
     if (_any(n, ['bat', 'drum', 'perc', 'room', 'ambience'])) return InstrumentType.drums;
 
     // Strings / guitar family
-    if (_any(n, ['violao', 'violão', 'acoustic', 'viol', 'nylon'])) {
+    if (_any(n, ['violao', 'violão', 'acoustic', 'nylon'])) {
       return InstrumentType.acoustic;
     }
     if (_any(n, ['bass', 'baixo', 'bx', 'bs'])) return InstrumentType.bass;

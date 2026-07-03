@@ -26,7 +26,7 @@ class MxStageApp extends StatelessWidget {
       themeMode: ThemeMode.dark,
       darkTheme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.teal,
+          seedColor: const Color(0xFF2AAF8E),
           brightness: Brightness.dark,
         ),
         useMaterial3: true,
@@ -38,7 +38,7 @@ class MxStageApp extends StatelessWidget {
           elevation: 0,
         ),
         sliderTheme: const SliderThemeData(
-          activeTrackColor: Colors.tealAccent,
+          activeTrackColor: Color(0xFF2AAF8E),
           inactiveTrackColor: Color(0xFF2A2A2A),
           thumbColor: Colors.white,
           trackHeight: 4,

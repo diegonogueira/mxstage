@@ -197,6 +197,9 @@ String _levelBar(double v) {
 // UDP message handling
 // ---------------------------------------------------------------------------
 
+// Tracked send levels per channel/bus: key = 'ch_bus', value = 0.0..1.0
+final _sendLevels = <String, double>{};
+
 void _handleMessage(
   RawDatagramSocket socket,
   InternetAddress src,
@@ -230,12 +233,22 @@ void _handleMessage(
       }
 
       final sendMatch = RegExp(r'^/ch/(\d{2})/mix/(\d{2})/level$').firstMatch(msg.address);
-      if (sendMatch != null && msg.args.isNotEmpty) {
-        final ch = sendMatch.group(1);
-        final bus = sendMatch.group(2);
-        final val = msg.args[0] as double;
-        print('\n[SIM] SEND ch=$ch bus=$bus float=${val.toStringAsFixed(4)}');
-        _printPrompt();
+      if (sendMatch != null) {
+        final ch = sendMatch.group(1)!;
+        final bus = sendMatch.group(2)!;
+        final key = '${ch}_$bus';
+
+        if (msg.args.isEmpty) {
+          // GET — return current tracked level (default 0.75)
+          final level = _sendLevels[key] ?? 0.75;
+          _send(socket, src, srcPort, encodeOsc(msg.address, ',f', [level]));
+        } else {
+          // SET — update and log
+          final val = msg.args[0] as double;
+          _sendLevels[key] = val;
+          print('\n[SIM] SEND ch=$ch bus=$bus float=${val.toStringAsFixed(4)}');
+          _printPrompt();
+        }
         return;
       }
   }

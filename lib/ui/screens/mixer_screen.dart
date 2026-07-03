@@ -16,9 +16,6 @@ class MixerScreen extends StatefulWidget {
 class _MixerScreenState extends State<MixerScreen> {
   MixerClient get _client => widget.client;
 
-  bool _muted = false;
-  final Map<int, double> _preMuteLevels = {};
-
   @override
   void initState() {
     super.initState();
@@ -33,22 +30,6 @@ class _MixerScreenState extends State<MixerScreen> {
 
   void _onClientChange() => setState(() {});
 
-  void _toggleMute() {
-    if (_muted) {
-      for (final ch in _client.channels) {
-        final saved = _preMuteLevels[ch.ch];
-        if (saved != null) _client.setChannelSend(ch.ch, saved);
-      }
-      _preMuteLevels.clear();
-    } else {
-      for (final ch in _client.channels) {
-        _preMuteLevels[ch.ch] = ch.sendLevel;
-        _client.setChannelSend(ch.ch, 0.0);
-      }
-    }
-    setState(() => _muted = !_muted);
-  }
-
   @override
   Widget build(BuildContext context) {
     final isLandscape = MediaQuery.orientationOf(context) == Orientation.landscape;
@@ -62,7 +43,7 @@ class _MixerScreenState extends State<MixerScreen> {
           Expanded(
             child: _FaderBoard(
               channels: _client.channels,
-              muted: _muted,
+              muted: _client.isMuted,
               isLandscape: isLandscape,
               meterDb: _client.meterDisplayDb,
               onLevelChanged: (ch, v) => _client.setChannelSend(ch, v),
@@ -92,11 +73,11 @@ class _MixerScreenState extends State<MixerScreen> {
       actions: [
         IconButton(
           icon: Icon(
-            _muted ? Icons.volume_off : Icons.volume_up,
-            color: _muted ? Colors.redAccent : Colors.white54,
+            _client.isMuted ? Icons.volume_off : Icons.volume_up,
+            color: _client.isMuted ? Colors.redAccent : Colors.white54,
           ),
-          tooltip: _muted ? 'Restaurar volume' : 'Mute retorno',
-          onPressed: _toggleMute,
+          tooltip: _client.isMuted ? 'Restaurar volume' : 'Mute retorno',
+          onPressed: _client.toggleMute,
         ),
         IconButton(
           icon: const Icon(Icons.link_off, color: Colors.white38),
@@ -133,21 +114,21 @@ class _AutoMixBar extends StatelessWidget {
           Icon(
             Icons.auto_fix_high,
             size: 16,
-            color: active ? Colors.tealAccent : Colors.white24,
+            color: active ? const Color(0xFF2AAF8E) : Colors.white24,
           ),
           const SizedBox(width: 6),
           Text(
             'Auto-Mix',
             style: TextStyle(
               fontSize: 13,
-              color: active ? Colors.tealAccent : Colors.white38,
+              color: active ? const Color(0xFF2AAF8E) : Colors.white38,
               fontWeight: FontWeight.w500,
             ),
           ),
           Switch(
             value: active,
             onChanged: (v) => v ? client.enableAutoMix() : client.disableAutoMix(),
-            activeThumbColor: Colors.tealAccent,
+            activeThumbColor: const Color(0xFF2AAF8E),
           ),
           IconButton(
             icon: const Icon(Icons.help_outline, size: 18, color: Colors.white24),
@@ -191,8 +172,8 @@ class _GenreDropdown extends StatelessWidget {
       decoration: BoxDecoration(
         border: Border.all(
           color: active
-              ? Colors.tealAccent.withAlpha(120)
-              : Colors.tealAccent.withAlpha(40),
+              ? const Color(0xFF2AAF8E).withAlpha(120)
+              : const Color(0xFF2AAF8E).withAlpha(40),
         ),
         borderRadius: BorderRadius.circular(20),
       ),
@@ -200,15 +181,11 @@ class _GenreDropdown extends StatelessWidget {
         child: DropdownButton<Genre>(
           value: client.genre,
           isDense: true,
-          icon: const Icon(Icons.arrow_drop_down, size: 16, color: Colors.tealAccent),
+          icon: const Icon(Icons.arrow_drop_down, size: 16, color: Color(0xFF2AAF8E)),
           dropdownColor: const Color(0xFF1A1A1A),
-          // Disable while Auto-Mix is active — genre switch mid-session would
-          // invalidate the clamp references baked in at activate() time.
-          onChanged: active
-              ? null
-              : (g) {
-                  if (g != null) client.setGenre(g);
-                },
+          onChanged: (g) {
+            if (g != null) client.setGenre(g);
+          },
           items: Genre.values
               .map(
                 (g) => DropdownMenuItem(
@@ -216,11 +193,11 @@ class _GenreDropdown extends StatelessWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.music_note, size: 13, color: Colors.tealAccent),
+                      const Icon(Icons.music_note, size: 13, color: Color(0xFF2AAF8E)),
                       const SizedBox(width: 4),
                       Text(
                         g.label,
-                        style: const TextStyle(fontSize: 12, color: Colors.tealAccent),
+                        style: const TextStyle(fontSize: 12, color: Color(0xFF2AAF8E)),
                       ),
                     ],
                   ),
@@ -258,7 +235,7 @@ class _PrereqSheetState extends State<_PrereqSheet> {
           children: [
             Row(
               children: [
-                const Icon(Icons.checklist_rtl, color: Colors.tealAccent, size: 20),
+                const Icon(Icons.checklist_rtl, color: Color(0xFF2AAF8E), size: 20),
                 const SizedBox(width: 8),
                 const Text(
                   'Antes de ligar o Auto-Mix',
@@ -266,7 +243,7 @@ class _PrereqSheetState extends State<_PrereqSheet> {
                 ),
                 const Spacer(),
                 if (allOk)
-                  const Icon(Icons.check_circle, color: Colors.tealAccent, size: 20),
+                  const Icon(Icons.check_circle, color: Color(0xFF2AAF8E), size: 20),
               ],
             ),
             const SizedBox(height: 4),
@@ -285,7 +262,7 @@ class _PrereqSheetState extends State<_PrereqSheet> {
               Center(
                 child: Text(
                   'Tudo certo — pode ligar o Auto-Mix.',
-                  style: TextStyle(fontSize: 13, color: Colors.tealAccent.withAlpha(200)),
+                  style: TextStyle(fontSize: 13, color: const Color(0xFF2AAF8E).withAlpha(200)),
                 ),
               ),
           ],
@@ -314,7 +291,7 @@ class _PrereqTile extends StatelessWidget {
           children: [
             Icon(
               checked ? Icons.check_circle : Icons.radio_button_unchecked,
-              color: checked ? Colors.tealAccent : Colors.white24,
+              color: checked ? const Color(0xFF2AAF8E) : Colors.white24,
               size: 20,
             ),
             const SizedBox(width: 12),
@@ -531,7 +508,7 @@ class _ChannelStrip extends StatelessWidget {
                   height: 5,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: active ? Colors.tealAccent : const Color(0xFF222222),
+                    color: active ? const Color(0xFF2AAF8E) : const Color(0xFF222222),
                   ),
                 ),
               ],
@@ -580,7 +557,7 @@ class _VerticalFader extends StatelessWidget {
   Color _trackColor(double v) {
     if (v > 0.88) return Colors.redAccent;
     if (v > 0.75) return Colors.orangeAccent;
-    return Colors.tealAccent;
+    return const Color(0xFF2AAF8E);
   }
 }
 
@@ -616,8 +593,8 @@ class _VuMeterBar extends StatelessWidget {
   Color _barColor(double db) {
     if (db > 0) return Colors.redAccent;
     if (db > -6) return Colors.orangeAccent;
-    if (db > -18) return Colors.tealAccent;
-    return const Color(0xFF1A4A4A);
+    if (db > -18) return const Color(0xFF2AAF8E);
+    return const Color(0xFF1A5A4A);
   }
 }
 

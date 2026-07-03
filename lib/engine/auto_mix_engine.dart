@@ -23,9 +23,9 @@ class EngineParams {
   const EngineParams({
     this.gateDb = -45.0,
     this.deadbandDb = 2.0,
-    this.correctionGain = 0.3,
-    this.maxStepDb = 1.5,
-    this.clampDb = 6.0,
+    this.correctionGain = 0.25,
+    this.maxStepDb = 1.0,
+    this.clampDb = 3.0,
   });
 }
 
@@ -66,6 +66,16 @@ class AutoMixEngine {
 
   void deactivate() {
     _active = false;
+  }
+
+  /// Current send levels tracked by the engine (ch → float 0..1).
+  /// Used by MixerClient to enforce engine state over manual fader changes.
+  Map<int, double> get currentSendFloats {
+    if (!_active) return {};
+    return {
+      for (final entry in _currentSendDb.entries)
+        entry.key: dbToFloat(entry.value).clamp(0.0, 1.0),
+    };
   }
 
   /// Compute corrections for one tick.

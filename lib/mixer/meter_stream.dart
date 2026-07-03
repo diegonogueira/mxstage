@@ -1,4 +1,5 @@
-import '../osc/osc_codec.dart';
+import 'dart:math' as math;
+
 import '../osc/x32_protocol.dart';
 
 /// Smooths raw meter floats from the X32 into dB values via EMA.
@@ -15,9 +16,14 @@ class MeterStream {
   final List<double> _displayDb = List.filled(48, -90.0);
   final List<double> _engineDb = List.filled(48, -90.0);
 
+  static double _linearToDb(double f) {
+    if (f <= 1e-9) return -90.0;
+    return (20.0 * math.log(f) / math.ln10).clamp(-90.0, 0.0);
+  }
+
   void update(List<double> linearFloats) {
     for (var i = 0; i < linearFloats.length && i < 48; i++) {
-      final db = floatToDb(linearFloats[i].clamp(0.0, 1.0));
+      final db = _linearToDb(linearFloats[i].clamp(0.0, 1.0));
       _displayDb[i] = _displayAlpha * db + (1 - _displayAlpha) * _displayDb[i];
       _engineDb[i] = _engineAlpha * db + (1 - _engineAlpha) * _engineDb[i];
     }

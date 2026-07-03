@@ -107,7 +107,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
               (m) => Card(
                 margin: const EdgeInsets.only(bottom: 8),
                 child: ListTile(
-                  leading: const Icon(Icons.router, color: Colors.tealAccent),
+                  leading: const Icon(Icons.router, color: Color(0xFF2AAF8E)),
                   title: Text(m.name),
                   subtitle: Text('${m.model}  •  ${m.ip}  •  fw ${m.firmware}'),
                   trailing: const Icon(Icons.arrow_forward_ios, size: 16),
@@ -195,7 +195,7 @@ class _BusSelector extends StatelessWidget {
                 label: Text('$bus'),
                 selected: selected,
                 onSelected: (_) => onChanged(bus),
-                selectedColor: Colors.tealAccent,
+                selectedColor: const Color(0xFF2AAF8E),
                 labelStyle: TextStyle(
                   color: selected ? Colors.black : Colors.white,
                   fontWeight: FontWeight.bold,

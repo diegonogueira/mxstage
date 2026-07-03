@@ -66,6 +66,13 @@ class MixerClient extends ChangeNotifier {
   final _engine = AutoMixEngine();
   Genre _genre = Genre.gospel;
 
+  // Baseline send levels read from the mixer at connect time.
+  // Used as the engine's clamp reference to prevent drift each time
+  // auto-mix is toggled or the genre preset is changed.
+  final Map<int, double> _baselineLevels = {};
+  bool _muted = false;
+  final Map<int, double> _preMuteLevels = {};
+
   final List<DiscoveredMixer> discovered = [];
   final List<ChannelInfo> channels = List.generate(
     kInputChannelCount,
@@ -73,6 +80,11 @@ class MixerClient extends ChangeNotifier {
   );
   final List<InstrumentType> instruments =
       List.filled(kInputChannelCount, InstrumentType.unknown);
+
+  static final _reChName = RegExp(r'^/ch/(\d{2})/config/name$');
+  static final _reChIcon = RegExp(r'^/ch/(\d{2})/config/icon$');
+  static final _reChColor = RegExp(r'^/ch/(\d{2})/config/color$');
+  static final _reChSendLevel = RegExp(r'^/ch/(\d{2})/mix/(\d{2})/level$');
 
   String? get mixerIp => _mixerIp;
   String? get mixerName => _mixerName;
@@ -82,6 +94,7 @@ class MixerClient extends ChangeNotifier {
   int get busIndex => _busIndex;
   Genre get genre => _genre;
   bool get autoMixActive => _engine.isActive;
+  bool get isMuted => _muted;
 
   /// Fast-smoothed dB for display (~300ms EMA). 0-based channel index.
   double meterDisplayDb(int channelIndex) => _meters.displayDb(channelIndex);
@@ -93,12 +106,17 @@ class MixerClient extends ChangeNotifier {
 
   void setGenre(Genre g) {
     _genre = g;
+    if (_engine.isActive) {
+      // Re-anchor clamp so all genre targets are reachable from baseline.
+      final ref = {for (final ch in channels) ch.ch: _baselineLevels[ch.ch] ?? ch.sendLevel};
+      _engine.activate(ref);
+    }
     notifyListeners();
   }
 
   void enableAutoMix() {
-    final sends = {for (final ch in channels) ch.ch: ch.sendLevel};
-    _engine.activate(sends);
+    final ref = {for (final ch in channels) ch.ch: _baselineLevels[ch.ch] ?? ch.sendLevel};
+    _engine.activate(ref);
     _engineTimer?.cancel();
     _engineTimer = Timer.periodic(
       Duration(milliseconds: kCorrectionIntervalMs),
@@ -108,9 +126,34 @@ class MixerClient extends ChangeNotifier {
   }
 
   void disableAutoMix() {
+    if (_engine.isActive && _connected && !_muted) {
+      // Restore all channels to pre-auto-mix baseline so the mixer state stays
+      // clean. Without this, future reconnects read engine-modified values as
+      // the new baseline and compound the drift each activation cycle.
+      for (final entry in _baselineLevels.entries) {
+        setChannelSend(entry.key, entry.value);
+      }
+    }
     _engine.deactivate();
     _engineTimer?.cancel();
     _engineTimer = null;
+    notifyListeners();
+  }
+
+  void toggleMute() {
+    if (_muted) {
+      for (final ch in channels) {
+        final saved = _preMuteLevels[ch.ch];
+        if (saved != null) setChannelSend(ch.ch, saved);
+      }
+      _preMuteLevels.clear();
+    } else {
+      for (final ch in channels) {
+        _preMuteLevels[ch.ch] = ch.sendLevel;
+        setChannelSend(ch.ch, 0.0);
+      }
+    }
+    _muted = !_muted;
     notifyListeners();
   }
 
@@ -120,6 +163,21 @@ class MixerClient extends ChangeNotifier {
     final cmds = _engine.update(meterDb, instruments, preset);
     for (final cmd in cmds) {
       setChannelSend(cmd.ch, cmd.levelFloat);
+    }
+
+    // Enforce engine state: if user dragged a fader manually, the engine's
+    // _currentSendDb wasn't updated, so the channel deviation may be within
+    // the deadband and get no correction command. We still need to restore the
+    // fader to the engine's tracked level so the manual drag doesn't "stick".
+    if (!_muted) {
+      for (final entry in _engine.currentSendFloats.entries) {
+        final idx = entry.key - 1;
+        if (idx >= 0 && idx < channels.length) {
+          if ((entry.value - channels[idx].sendLevel).abs() > 0.005) {
+            setChannelSend(entry.key, entry.value);
+          }
+        }
+      }
     }
   }
 
@@ -198,6 +256,9 @@ class MixerClient extends ChangeNotifier {
 
   Future<void> disconnect() async {
     disableAutoMix();
+    _baselineLevels.clear();
+    _muted = false;
+    _preMuteLevels.clear();
     _meterNotifyTimer?.cancel();
     _meterNotifyTimer = null;
     _renewTimer?.cancel();
@@ -221,6 +282,12 @@ class MixerClient extends ChangeNotifier {
       channels[idx].sendLevel = level;
     }
 
+    // Manual fader adjustments (made while auto-mix is OFF) update the
+    // baseline so the next auto-mix activation uses the user's intent as ref.
+    if (!_engine.isActive) {
+      _baselineLevels[ch] = level;
+    }
+
     final address =
         '/ch/${ch.toString().padLeft(2, '0')}/mix/${_busIndex.toString().padLeft(2, '0')}/level';
     _send(encodeOsc(address, ',f', [level]));
@@ -241,11 +308,13 @@ class MixerClient extends ChangeNotifier {
 
   Future<void> _fetchChannelConfig() async {
     if (_socket == null) return;
+    final busPad = _busIndex.toString().padLeft(2, '0');
     for (var ch = 1; ch <= kInputChannelCount; ch++) {
       final pad = ch.toString().padLeft(2, '0');
       _send(encodeOsc('/ch/$pad/config/name', ',', []));
       _send(encodeOsc('/ch/$pad/config/icon', ',', []));
       _send(encodeOsc('/ch/$pad/config/color', ',', []));
+      _send(encodeOsc('/ch/$pad/mix/$busPad/level', ',', []));
       await Future.delayed(const Duration(milliseconds: 20));
     }
     await Future.delayed(const Duration(milliseconds: 500));
@@ -266,7 +335,7 @@ class MixerClient extends ChangeNotifier {
     }
 
     // Channel name response
-    final nameMatch = RegExp(r'^/ch/(\d{2})/config/name$').firstMatch(msg.address);
+    final nameMatch = _reChName.firstMatch(msg.address);
     if (nameMatch != null && msg.args.isNotEmpty) {
       final ch = int.parse(nameMatch.group(1)!);
       final idx = ch - 1;
@@ -286,7 +355,7 @@ class MixerClient extends ChangeNotifier {
     }
 
     // Icon response (int)
-    final iconMatch = RegExp(r'^/ch/(\d{2})/config/icon$').firstMatch(msg.address);
+    final iconMatch = _reChIcon.firstMatch(msg.address);
     if (iconMatch != null && msg.args.isNotEmpty) {
       final ch = int.parse(iconMatch.group(1)!);
       final idx = ch - 1;
@@ -307,7 +376,7 @@ class MixerClient extends ChangeNotifier {
     }
 
     // Color response (int 0-7)
-    final colorMatch = RegExp(r'^/ch/(\d{2})/config/color$').firstMatch(msg.address);
+    final colorMatch = _reChColor.firstMatch(msg.address);
     if (colorMatch != null && msg.args.isNotEmpty) {
       final ch = int.parse(colorMatch.group(1)!);
       final idx = ch - 1;
@@ -323,6 +392,25 @@ class MixerClient extends ChangeNotifier {
         );
         _reidentify(idx);
         notifyListeners();
+      }
+      return;
+    }
+
+    // Send level response — /ch/NN/mix/MM/level ,f <val>
+    final sendLevelMatch = _reChSendLevel.firstMatch(msg.address);
+    if (sendLevelMatch != null && msg.args.isNotEmpty) {
+      final ch = int.parse(sendLevelMatch.group(1)!);
+      final bus = int.parse(sendLevelMatch.group(2)!);
+      if (bus == _busIndex) {
+        final idx = ch - 1;
+        if (idx >= 0 && idx < channels.length) {
+          final level = (msg.args[0] as double).clamp(0.0, 1.0);
+          channels[idx].sendLevel = level;
+          if (!_engine.isActive) {
+            _baselineLevels[ch] = level;
+          }
+          notifyListeners();
+        }
       }
       return;
     }
