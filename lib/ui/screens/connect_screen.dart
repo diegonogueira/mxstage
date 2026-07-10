@@ -5,6 +5,7 @@ import '../../mixer/mixer_client.dart';
 import '../palette.dart';
 import '../widgets/bus_picker.dart';
 import 'mixer_screen.dart';
+import 'mixer_setup_screen.dart';
 
 class ConnectScreen extends StatefulWidget {
   const ConnectScreen({super.key});
@@ -212,6 +213,17 @@ class _ConnectScreenState extends State<ConnectScreen>
                   ),
                 ],
               ),
+
+              const SizedBox(height: 24),
+              const Divider(),
+              const SizedBox(height: 16),
+
+              // Preparar a mesa — leva ao guia de configuração da X32.
+              _SetupGuideButton(
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const MixerSetupScreen()),
+                ),
+              ),
             ],
           ),
 
@@ -233,6 +245,68 @@ class _ConnectScreenState extends State<ConnectScreen>
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+// ── Botão para o guia de configuração da mesa ────────────────────────────────
+
+class _SetupGuideButton extends StatelessWidget {
+  final VoidCallback onTap;
+
+  const _SetupGuideButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.panel,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppColors.blue.withAlpha(90)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: AppColors.blue.withAlpha(30),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.tune, color: AppColors.blue, size: 22),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Como configurar a mesa',
+                      style: TextStyle(
+                        fontSize: 14.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    SizedBox(height: 2),
+                    Text(
+                      'O que ajustar na X32 para o Auto-Mix ler o volume real',
+                      style: TextStyle(fontSize: 12, color: Colors.white54, height: 1.3),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(Icons.arrow_forward_ios, size: 14, color: AppColors.blue),
+            ],
+          ),
+        ),
       ),
     );
   }
