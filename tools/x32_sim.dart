@@ -34,10 +34,15 @@ import 'dart:typed_data';
 import '../lib/osc/osc_codec.dart';
 import '../lib/osc/x32_protocol.dart';
 
-const _simIp = '127.0.0.1';
+// Overwritten at startup with the machine's LAN IP so a phone that discovers
+// the sim connects back to the PC (not to 127.0.0.1 = itself).
+var _simIp = '127.0.0.1';
 const _simName = 'X32-SIM';
 const _simModel = 'X32';
 const _simFirmware = '4.07';
+
+// Where the pre-processed instrument stems live (served in --web mode).
+const _audioDir = 'tools/sim_audio';
 
 // Synthetic channel names (band scenario)
 const _channelNames = [
@@ -89,7 +94,9 @@ void main(List<String> args) async {
   final (web, webPort) = _parseWebArgs(args);
 
   final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, kX32Port);
+  _simIp = await _detectLanIp();
   print('[SIM] X32 Simulator running on UDP port $kX32Port');
+  print('[SIM] >>> No app (celular), conecte em:  $_simIp   (porta $kX32Port) <<<');
   if (web) {
     _autoSimEnabled = false;
     await _startWebServer(webPort);
@@ -407,10 +414,45 @@ void _resetLevels() {
   return (false, 8080);
 }
 
+// Best-effort LAN IPv4 so a phone can reach this PC. Skips loopback,
+// link-local, Docker (172.16–31) and Tailscale/CGNAT (100.64/10).
+Future<String> _detectLanIp() async {
+  try {
+    final ifaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4, includeLoopback: false);
+    final addrs = [for (final i in ifaces) ...i.addresses.map((a) => a.address)];
+    bool ok(String ip) =>
+        !ip.startsWith('169.254.') && !ip.startsWith('172.') &&
+        !ip.startsWith('100.') && ip != '127.0.0.1';
+    return addrs.firstWhere(
+      (a) => ok(a) && (a.startsWith('192.168.') || a.startsWith('10.')),
+      orElse: () => addrs.firstWhere(ok, orElse: () => '127.0.0.1'),
+    );
+  } catch (_) {
+    return '127.0.0.1';
+  }
+}
+
+Future<void> _serveFile(HttpRequest req, String path, String mime) async {
+  final f = File(path);
+  if (!await f.exists()) {
+    req.response.statusCode = HttpStatus.notFound;
+    req.response.write('not found: $path');
+    await req.response.close();
+    return;
+  }
+  req.response.headers.set(HttpHeaders.contentTypeHeader, mime);
+  req.response.headers.set('Access-Control-Allow-Origin', '*');
+  await req.response.addStream(f.openRead());
+  await req.response.close();
+}
+
 Future<void> _startWebServer(int port) async {
   final server = await HttpServer.bind(InternetAddress.anyIPv4, port);
+  final audioRe = RegExp(r'^/audio/([a-z0-9_]+)/(ch\d{2}\.ogg)$');
   server.listen((req) async {
-    if (req.uri.path == '/ws') {
+    final path = req.uri.path;
+    if (path == '/ws') {
       try {
         final ws = await WebSocketTransformer.upgrade(req);
         _webClients.add(ws);
@@ -423,6 +465,11 @@ Future<void> _startWebServer(int port) async {
       } catch (_) {
         // upgrade failed — ignore
       }
+    } else if (path == '/manifest') {
+      await _serveFile(req, '$_audioDir/manifest.json', 'application/json');
+    } else if (audioRe.hasMatch(path)) {
+      final m = audioRe.firstMatch(path)!;
+      await _serveFile(req, '$_audioDir/${m.group(1)}/${m.group(2)}', 'audio/ogg');
     } else {
       req.response.headers.contentType = ContentType.html;
       req.response.write(_kIndexHtml);
@@ -501,6 +548,10 @@ const _kIndexHtml = r'''<!DOCTYPE html>
                  height:0%; transition:height .05s linear; }
   input[type=range] { writing-mode:vertical-lr; direction:rtl; width:24px; height:210px;
                       accent-color:#58a6ff; cursor:pointer; }
+  select.song { background:#21262d; color:#e6edf3; border:1px solid #30363d; border-radius:6px;
+                padding:6px 8px; font-size:13px; max-width:280px; }
+  #play { min-width:104px; font-weight:600; }
+  #play.on { background:#238636; border-color:#2ea043; color:#fff; }
 </style>
 </head>
 <body>
@@ -508,7 +559,9 @@ const _kIndexHtml = r'''<!DOCTYPE html>
   <h1>&#127899; X32 SIM &mdash; Mesa de Instrumentos</h1>
   <span id="status" class="status bad">desconectado</span>
   <button id="reset">Reset</button>
-  <span class="hint">Arraste os faders para simular os m&uacute;sicos tocando &mdash; a barra colorida &eacute; o n&iacute;vel captado; &ldquo;&rarr;&rdquo; &eacute; o retorno que o app est&aacute; enviando.</span>
+  <select id="song" class="song"></select>
+  <button id="play">Tocar</button>
+  <span class="hint">Escolha a m&uacute;sica e toque. Arraste os faders (entrada = o quanto o m&uacute;sico toca). Ligue o Auto-Mix no celular e ou&ccedil;a o app segurar o balan&ccedil;o &mdash; barra colorida = n&iacute;vel captado; &ldquo;&rarr;&rdquo; = retorno que o app envia.</span>
 </header>
 <div class="board" id="board"></div>
 <script>
@@ -517,6 +570,11 @@ const _kIndexHtml = r'''<!DOCTYPE html>
   var faders = [], fills = [], vals = [], sends = [];
   var initialized = false;
   var ws;
+  // Web Audio: toca os stems reais com ganho = entrada (fader azul) x send (app)
+  var actx = null, abufs = {}, asrcs = {}, again = {}, master = null;
+  var songs = [], playing = false, loading = false;
+  var selEl = document.getElementById("song");
+  var playEl = document.getElementById("play");
 
   function buildBoard(names) {
     board.innerHTML = "";
@@ -595,6 +653,7 @@ const _kIndexHtml = r'''<!DOCTYPE html>
               ? "" : ("→ " + Math.round(m.sends[i] * 100) + "%");
           }
         }
+        applyAudioGains(m.levels, m.sends);
         initialized = true;
       }
     };
@@ -604,6 +663,80 @@ const _kIndexHtml = r'''<!DOCTYPE html>
     initialized = false;
     send({ type: "reset" });
   });
+
+  // ---- Web Audio: tocar os stems reais ------------------------------------
+  function ensureCtx() {
+    if (!actx) {
+      actx = new (window.AudioContext || window.webkitAudioContext)();
+      master = actx.createGain(); master.gain.value = 0.22;
+      var comp = actx.createDynamicsCompressor();
+      master.connect(comp); comp.connect(actx.destination);
+    }
+    if (actx.state === "suspended") actx.resume();
+  }
+  function stopAudio() {
+    Object.keys(asrcs).forEach(function (ch) { try { asrcs[ch].stop(); } catch (e) {} });
+    asrcs = {}; again = {}; playing = false;
+    playEl.textContent = "Tocar"; playEl.className = "";
+  }
+  function loadSong(song) {
+    return new Promise(function (resolve) {
+      ensureCtx(); abufs = {};
+      var chans = Object.keys(song.channels), done = 0;
+      if (!chans.length) { resolve(); return; }
+      chans.forEach(function (ch) {
+        fetch("/audio/" + song.id + "/" + song.channels[ch])
+          .then(function (r) { return r.arrayBuffer(); })
+          .then(function (ab) { return actx.decodeAudioData(ab); })
+          .then(function (buf) { abufs[ch] = buf; })
+          .catch(function () {})
+          .then(function () { if (++done === chans.length) resolve(); });
+      });
+    });
+  }
+  function startAudio() {
+    ensureCtx();
+    var t0 = actx.currentTime + 0.08;
+    Object.keys(abufs).forEach(function (ch) {
+      var src = actx.createBufferSource(); src.buffer = abufs[ch]; src.loop = true;
+      var g = actx.createGain(); g.gain.value = 0;
+      src.connect(g); g.connect(master); src.start(t0);
+      asrcs[ch] = src; again[ch] = g;
+    });
+    playing = true; playEl.textContent = "Parar"; playEl.className = "on";
+  }
+  function applyAudioGains(levels, snd) {
+    if (!playing || !actx) return;
+    Object.keys(again).forEach(function (ch) {
+      var i = parseInt(ch, 10) - 1;
+      var lv = levels[i] || 0;
+      var sd = (snd[i] == null) ? 0.75 : snd[i];
+      again[ch].gain.setTargetAtTime(lv * sd, actx.currentTime, 0.04);
+    });
+  }
+  function loadManifest() {
+    fetch("/manifest").then(function (r) { return r.json(); }).then(function (j) {
+      songs = j.songs || [];
+      selEl.innerHTML = "";
+      songs.forEach(function (s, idx) {
+        var o = document.createElement("option");
+        o.value = idx; o.textContent = s.title + "  (" + s.genre + ")";
+        selEl.appendChild(o);
+      });
+    }).catch(function () {});
+  }
+  playEl.addEventListener("click", function () {
+    if (playing) { stopAudio(); return; }
+    if (loading || !songs.length) return;
+    var song = songs[parseInt(selEl.value || "0", 10)];
+    if (!song) return;
+    loading = true; playEl.textContent = "carregando...";
+    loadSong(song).then(function () { loading = false; startAudio(); });
+  });
+  selEl.addEventListener("change", function () {
+    if (playing) { stopAudio(); playEl.click(); }
+  });
+  loadManifest();
 
   connect();
 </script>

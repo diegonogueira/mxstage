@@ -44,3 +44,6 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Stems de teste do simulador (Cambridge-MT, uso só para prática — não commitar)
+tools/sim_audio/
