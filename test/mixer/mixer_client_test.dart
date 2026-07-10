@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mxwise/mixer/mixer_client.dart';
 import 'package:mxwise/osc/osc_codec.dart';
 import 'package:mxwise/osc/x32_protocol.dart';
+import 'package:mxwise/state/instrument_type.dart';
 
 void main() {
   late RawDatagramSocket fakeX32;
@@ -101,5 +102,49 @@ void main() {
     final writes = received.where((m) => m.address.endsWith('/level') && m.args.isNotEmpty);
     expect(writes, isNotEmpty);
     expect(writes.every((m) => m.address == '/ch/08/mix/06/level'), isTrue);
+  });
+
+  // ── Override manual de instrumento ─────────────────────────────────────────
+  // A mesa fake nomeia os canais "Ch NN", que a auto-detecção não reconhece
+  // (unknown) — base ideal para checar que o override vence o detectado.
+
+  test('setInstrumentOverride wins over detection and flags the channel', () {
+    expect(client.detectedInstrument(1), InstrumentType.unknown);
+    expect(client.isOverridden(1), isFalse);
+
+    client.setInstrumentOverride(1, InstrumentType.backingVocal);
+
+    expect(client.instruments[0], InstrumentType.backingVocal);
+    expect(client.isOverridden(1), isTrue);
+    // Detecção original preservada por baixo do override.
+    expect(client.detectedInstrument(1), InstrumentType.unknown);
+  });
+
+  test('setInstrumentOverride(null) reverts to the detected type', () {
+    client.setInstrumentOverride(1, InstrumentType.leadVocal);
+    expect(client.instruments[0], InstrumentType.leadVocal);
+
+    client.setInstrumentOverride(1, null);
+
+    expect(client.isOverridden(1), isFalse);
+    expect(client.instruments[0], client.detectedInstrument(1));
+  });
+
+  test('setInstrumentOverrides bulk-loads and clearInstrumentOverrides resets', () {
+    client.setInstrumentOverrides({
+      2: InstrumentType.guitar,
+      3: InstrumentType.bass,
+    });
+
+    expect(client.instruments[1], InstrumentType.guitar);
+    expect(client.instruments[2], InstrumentType.bass);
+    expect(client.isOverridden(2), isTrue);
+    expect(client.isOverridden(1), isFalse);
+
+    client.clearInstrumentOverrides();
+
+    expect(client.isOverridden(2), isFalse);
+    expect(client.instruments[1], client.detectedInstrument(2));
+    expect(client.instruments[2], client.detectedInstrument(3));
   });
 }

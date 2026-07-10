@@ -79,8 +79,19 @@ class MixerClient extends ChangeNotifier {
     kInputChannelCount,
     (i) => ChannelInfo(ch: i + 1, name: 'Ch ${i + 1}'),
   );
+  /// Instrumento **efetivo** por canal (índice 0 = ch1): o detectado, ou o
+  /// override manual quando houver. É esta lista que o engine e a UI leem.
   final List<InstrumentType> instruments =
       List.filled(kInputChannelCount, InstrumentType.unknown);
+
+  /// Resultado puro da auto-detecção (`ChannelMapper`), sem override. Usado para
+  /// mostrar "detectado: …" no seletor e para voltar ao padrão.
+  final List<InstrumentType> _detected =
+      List.filled(kInputChannelCount, InstrumentType.unknown);
+
+  /// Sobreposições manuais canal (1-based) → tipo escolhido pelo músico. Vencem
+  /// a auto-detecção. Persistidas por mesa pela UI (`AppSettings`).
+  final Map<int, InstrumentType> _overrides = {};
 
   /// Mix bus names read from the mixer (`/bus/NN/config/name`). Index 0 = bus 1.
   final List<String?> busNames = List.filled(kMixBusCount, null);
@@ -111,6 +122,62 @@ class MixerClient extends ChangeNotifier {
 
   /// Fast-smoothed dB for display (~300ms EMA). 0-based channel index.
   double meterDisplayDb(int channelIndex) => _meters.displayDb(channelIndex);
+
+  // ── Override de instrumento ────────────────────────────────────────────────
+  // Camada de sobreposição manual sobre a auto-detecção. Não toca no engine nem
+  // no I/O — apenas re-mistura a lista efetiva `instruments` que ambos já leem.
+
+  /// Instrumento auto-detectado do canal [ch] (1-based), ignorando override.
+  InstrumentType detectedInstrument(int ch) {
+    final idx = ch - 1;
+    return (idx >= 0 && idx < _detected.length)
+        ? _detected[idx]
+        : InstrumentType.unknown;
+  }
+
+  /// `true` se o canal [ch] (1-based) tem uma sobreposição manual ativa.
+  bool isOverridden(int ch) => _overrides.containsKey(ch);
+
+  /// Recompõe `instruments[idx]` a partir de `_detected` ⊕ `_overrides`.
+  void _applyEffective(int idx) {
+    instruments[idx] = _overrides[idx + 1] ?? _detected[idx];
+  }
+
+  /// Define (ou remove, com [type] `null`) o override do canal [ch] (1-based).
+  /// O engine relê `instruments` a cada tick, então o novo alvo entra sozinho no
+  /// próximo ciclo — não precisa re-anchorar o clamp.
+  void setInstrumentOverride(int ch, InstrumentType? type) {
+    final idx = ch - 1;
+    if (idx < 0 || idx >= instruments.length) return;
+    if (type == null) {
+      _overrides.remove(ch);
+    } else {
+      _overrides[ch] = type;
+    }
+    _applyEffective(idx);
+    notifyListeners();
+  }
+
+  /// Carga em lote dos overrides (chamada no connect, com o mapa da mesa).
+  void setInstrumentOverrides(Map<int, InstrumentType> map) {
+    _overrides
+      ..clear()
+      ..addAll(map);
+    for (var idx = 0; idx < instruments.length; idx++) {
+      _applyEffective(idx);
+    }
+    notifyListeners();
+  }
+
+  /// Remove todos os overrides desta mesa — todos os canais voltam ao detectado.
+  void clearInstrumentOverrides() {
+    if (_overrides.isEmpty) return;
+    _overrides.clear();
+    for (var idx = 0; idx < instruments.length; idx++) {
+      _applyEffective(idx);
+    }
+    notifyListeners();
+  }
 
   set busIndex(int v) {
     _busIndex = v.clamp(1, kMixBusCount);
@@ -296,6 +363,7 @@ class MixerClient extends ChangeNotifier {
     unawaited(BackgroundKeepAlive.disable());
     disableAutoMix();
     _baselineLevels.clear();
+    _overrides.clear();
     _muted = false;
     _preMuteLevels.clear();
     _meterNotifyTimer?.cancel();
@@ -513,11 +581,14 @@ class MixerClient extends ChangeNotifier {
 
   void _reidentify(int idx) {
     final ch = channels[idx];
-    instruments[idx] = ChannelMapper.identify(
+    _detected[idx] = ChannelMapper.identify(
       name: ch.name,
       iconId: ch.iconId,
       colorId: ch.colorId,
     );
+    // Override manual (se houver) vence a re-detecção — o operador troca o nome
+    // do canal, não o que o músico marcou ali.
+    _applyEffective(idx);
   }
 
   void _send(Uint8List data) {

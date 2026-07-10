@@ -9,6 +9,7 @@ import '../../state/instrument_type.dart';
 import '../instrument_visuals.dart';
 import '../palette.dart';
 import '../widgets/bus_picker.dart';
+import '../widgets/instrument_picker.dart';
 import '../widgets/live_entry.dart';
 import '../widgets/mode_badge.dart';
 
@@ -37,6 +38,16 @@ class _MixerScreenState extends State<MixerScreen> {
     _client.addListener(_onClientChange);
     _loadLiveBus();
     _loadGenre();
+    _loadOverrides();
+  }
+
+  // Restaura as sobreposições manuais de instrumento salvas para esta mesa.
+  Future<void> _loadOverrides() async {
+    final mixer = _client.mixerName;
+    if (mixer == null || mixer.isEmpty) return;
+    final map = await AppSettings.instrumentOverrides(mixer);
+    if (!mounted || map.isEmpty) return;
+    _client.setInstrumentOverrides(map);
   }
 
   Future<void> _loadLiveBus() async {
@@ -115,6 +126,57 @@ class _MixerScreenState extends State<MixerScreen> {
     );
   }
 
+  // Segurar um canal abre o seletor do que ele realmente é (Voz Lead, Backing,
+  // Guitarra…). A sobreposição vence a auto-detecção e é salva por mesa.
+  void _editInstrument(ChannelInfo ch) {
+    showInstrumentPicker(
+      context,
+      ch: ch.ch,
+      channelName: ch.name,
+      current: _client.instruments[ch.ch - 1],
+      detected: _client.detectedInstrument(ch.ch),
+      isOverridden: _client.isOverridden(ch.ch),
+      onSelected: (type) async {
+        _client.setInstrumentOverride(ch.ch, type);
+        final mixer = _client.mixerName;
+        if (mixer != null && mixer.isNotEmpty) {
+          await AppSettings.setInstrumentOverride(mixer, ch.ch, type);
+        }
+      },
+    );
+  }
+
+  // Volta todos os canais à auto-detecção (limpa os overrides desta mesa).
+  Future<void> _resetOverrides() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.panel,
+        title: const Text('Restaurar detecção automática'),
+        content: const Text(
+          'Isto apaga todos os ajustes manuais de instrumento desta mesa e volta '
+          'cada canal ao que foi detectado automaticamente.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Restaurar'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    _client.clearInstrumentOverrides();
+    final mixer = _client.mixerName;
+    if (mixer != null && mixer.isNotEmpty) {
+      await AppSettings.clearInstrumentOverrides(mixer);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final isLandscape = MediaQuery.orientationOf(context) == Orientation.landscape;
@@ -151,6 +213,8 @@ class _MixerScreenState extends State<MixerScreen> {
               isLandscape: isLandscape,
               meterDb: _client.meterDisplayDb,
               onLevelChanged: (ch, v) => _client.setChannelSend(ch, v),
+              isOverridden: _client.isOverridden,
+              onEditInstrument: _editInstrument,
             ),
           ),
         ],
@@ -188,9 +252,26 @@ class _MixerScreenState extends State<MixerScreen> {
         ],
       ),
       actions: [
-        Padding(
-          padding: const EdgeInsets.only(right: 8),
-          child: Center(child: ModeBadge(mode: widget.mode)),
+        Center(child: ModeBadge(mode: widget.mode)),
+        PopupMenuButton<String>(
+          icon: const Icon(Icons.more_vert, size: 20),
+          color: AppColors.elevated,
+          tooltip: 'Mais opções',
+          onSelected: (v) {
+            if (v == 'reset_instruments') _resetOverrides();
+          },
+          itemBuilder: (_) => const [
+            PopupMenuItem(
+              value: 'reset_instruments',
+              child: Row(
+                children: [
+                  Icon(Icons.auto_fix_high, size: 18, color: AppColors.blue),
+                  SizedBox(width: 10),
+                  Text('Restaurar detecção automática'),
+                ],
+              ),
+            ),
+          ],
         ),
       ],
     );
@@ -380,6 +461,8 @@ class _FaderBoard extends StatelessWidget {
   final bool isLandscape;
   final double Function(int channelIndex) meterDb;
   final void Function(int ch, double level) onLevelChanged;
+  final bool Function(int ch) isOverridden;
+  final void Function(ChannelInfo ch) onEditInstrument;
 
   const _FaderBoard({
     required this.channels,
@@ -388,6 +471,8 @@ class _FaderBoard extends StatelessWidget {
     required this.isLandscape,
     required this.meterDb,
     required this.onLevelChanged,
+    required this.isOverridden,
+    required this.onEditInstrument,
   });
 
   @override
@@ -409,10 +494,12 @@ class _FaderBoard extends StatelessWidget {
             instrument: chIdx >= 0 && chIdx < instruments.length
                 ? instruments[chIdx]
                 : InstrumentType.unknown,
+            overridden: isOverridden(ch.ch),
             width: stripW,
             muted: muted,
             meterDb: meterDb(chIdx),
             onLevelChanged: (v) => onLevelChanged(ch.ch, v),
+            onEditInstrument: () => onEditInstrument(ch),
           );
         },
       ),
@@ -423,18 +510,22 @@ class _FaderBoard extends StatelessWidget {
 class _ChannelStrip extends StatelessWidget {
   final ChannelInfo channel;
   final InstrumentType instrument;
+  final bool overridden;
   final double width;
   final bool muted;
   final double meterDb;
   final ValueChanged<double> onLevelChanged;
+  final VoidCallback onEditInstrument;
 
   const _ChannelStrip({
     required this.channel,
     required this.instrument,
+    required this.overridden,
     required this.width,
     required this.muted,
     required this.meterDb,
     required this.onLevelChanged,
+    required this.onEditInstrument,
   });
 
   @override
@@ -461,54 +552,65 @@ class _ChannelStrip extends StatelessWidget {
         ),
         child: Column(
           children: [
-            // Header: channel number + mixer name + what the app identified
-            Padding(
-              padding: const EdgeInsets.fromLTRB(4, 8, 4, 6),
-              child: Column(
-                children: [
-                  Text(
-                    channel.ch.toString().padLeft(2, '0'),
-                    style: const TextStyle(fontSize: 10, color: Colors.white24, letterSpacing: 1),
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    channel.name,
-                    textAlign: TextAlign.center,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: muted ? Colors.white12 : Colors.white,
-                      height: 1.2,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                // Identified instrument — amber flags an unrecognised channel
-                // whose auto-mix target is falling back to the generic default.
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
+            // Header: number + name + what the app identified. Long-press to
+            // manually set what this channel really is (overrides detection).
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onLongPress: onEditInstrument,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(4, 8, 4, 6),
+                child: Column(
                   children: [
-                    Icon(instrumentIcon(instrument), size: 11, color: idColor),
-                    const SizedBox(width: 3),
-                    Flexible(
-                      child: Text(
-                        known ? instrument.label : '?',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 10,
-                          height: 1.1,
-                          color: idColor,
-                          fontWeight: FontWeight.w500,
-                        ),
+                    Text(
+                      channel.ch.toString().padLeft(2, '0'),
+                      style: const TextStyle(
+                          fontSize: 10, color: Colors.white24, letterSpacing: 1),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      channel.name,
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: muted ? Colors.white12 : Colors.white,
+                        height: 1.2,
                       ),
+                    ),
+                    const SizedBox(height: 4),
+                    // Identified instrument. Amber flags an unrecognised channel
+                    // (auto-mix falls back to the generic default); a pencil marks
+                    // a manual override the musician set by long-pressing.
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(instrumentIcon(instrument), size: 11, color: idColor),
+                        const SizedBox(width: 3),
+                        Flexible(
+                          child: Text(
+                            known ? instrument.label : '?',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 10,
+                              height: 1.1,
+                              color: idColor,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                        if (overridden && !muted) ...[
+                          const SizedBox(width: 3),
+                          const Icon(Icons.edit, size: 9, color: AppColors.blue),
+                        ],
+                      ],
                     ),
                   ],
                 ),
-              ],
+              ),
             ),
-          ),
 
           // Fader + VU meter side by side
           Expanded(
