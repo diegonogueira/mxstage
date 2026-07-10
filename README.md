@@ -3,6 +3,9 @@
 Auto-mix de retorno para Behringer X32. Mantém o balanço do monitor pessoal
 de um músico no palco, corrigindo drift de nível automaticamente sem operador.
 
+Além do monitor do músico (**Stage**), o mesmo Auto-Mix atende a mix da
+**transmissão** (Live/YouTube) — ver [Modos](#modos-stage-e-live).
+
 ## Pré-requisitos
 
 ### Flutter SDK
@@ -69,16 +72,45 @@ tools/          # x32_sim.dart + probe.dart
 test/           # testes unitários
 ```
 
+## Modos: Stage e Live
+
+O app abre direto na descoberta da mesa. No seletor de bus, além dos monitores,
+há uma entrada **Live** (protegida por PIN) para a mix da transmissão.
+
+- **Stage** — monitor pessoal do músico. Escolhe seu bus de retorno e o Auto-Mix
+  mantém o balanço. Uso padrão, aberto.
+- **Live** — mix dedicada da transmissão (YouTube). Entrada protegida por PIN.
+  O bus da Live é resolvido nesta ordem:
+  1. um bus **nomeado** `Live`/`Transmissão`/`Stream`/… na própria mesa;
+  2. o último bus lembrado;
+  3. designação manual (uma vez) — botão "trocar" na entrada Live re-designa.
+
+O núcleo (`MixerClient` + engine + faders) é agnóstico ao modo — só muda o bus
+alvo, o portão de entrada e a apresentação. Um bus é apenas um destino de mix: a
+Live é um **MixBus dedicado** roteado pra placa de streaming; o caminho OSC é
+idêntico ao de um monitor (`/ch/NN/mix/MM/level`).
+
+**Segurança (build de teste):** o PIN (`kLivePin`, hoje fixo `7733`) é temporário
+— previne acidente/curiosidade, não é barreira real (o X32 não autentica cliente
+na rede). O bus da Live fica escondido do seletor do Stage, então o músico não o
+seleciona. Direção futura: provisionamento por device com tokens assinados.
+PA/FOH está fora de escopo.
+
+**Setup na mesa:** dedique um bus livre à transmissão, roteie-o pra sua placa/
+saída de streaming e **nomeie-o `Live`** — o app o reconhece sozinho. (O
+simulador `tools/x32_sim.dart` já traz o bus 16 nomeado `Live` para teste.)
+
 ## Milestones
 
-| M  | Feature                       | Status  |
-|----|-------------------------------|---------|
-| M0 | Fundação OSC + simulador      | ✅ done  |
-| M1 | Conexão + volume manual       | planned |
-| M2 | Medidores + referência        | planned |
-| M3 | Auto-Mix Engine               | planned |
-| M4 | Boost + persistência + logging| planned |
-| M5 | Polimento + iOS               | planned |
+| M  | Feature                       | Status          |
+|----|-------------------------------|-----------------|
+| M0 | Fundação OSC + simulador      | ✅ done          |
+| M1 | Conexão + volume manual       | ✅ done          |
+| M2 | Medidores + referência        | ✅ done          |
+| M3 | Auto-Mix Engine               | ✅ done          |
+| M4 | Boost + persistência + logging| 🚧 em progresso  |
+| M5 | Polimento + iOS               | 🚧 em progresso  |
+| —  | Modos Stage/Live (transmissão)| ✅ build de teste (PIN fixo) |
 
 ## Protocolo
 

@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../mixer/mixer_client.dart';
+import '../../state/app_mode.dart';
+import '../../state/app_settings.dart';
 import '../palette.dart';
 import '../widgets/bus_picker.dart';
+import '../widgets/live_entry.dart';
 import 'mixer_screen.dart';
 import 'mixer_setup_screen.dart';
 
@@ -19,6 +22,7 @@ class _ConnectScreenState extends State<ConnectScreen>
   late final MixerClient _client;
   final _ipController = TextEditingController();
   bool _connecting = false;
+  int? _liveBus;
 
   @override
   void initState() {
@@ -27,9 +31,17 @@ class _ConnectScreenState extends State<ConnectScreen>
     _client.addListener(_onClientChange);
     WidgetsBinding.instance.addObserver(this);
     _client.startDiscovery();
+    _loadLiveBus();
   }
 
   void _onClientChange() => setState(() {});
+
+  // Which bus is designated as the broadcast (Live) bus. In Stage mode it is
+  // hidden from the bus picker so a musician can't grab the transmission mix.
+  Future<void> _loadLiveBus() async {
+    final bus = await AppSettings.liveBus();
+    if (mounted) setState(() => _liveBus = bus);
+  }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -59,11 +71,31 @@ class _ConnectScreenState extends State<ConnectScreen>
     }
   }
 
-  Future<void> _openMixer(int bus) async {
+  // Entrada "Live" no seletor de bus: pede o PIN e resolve qual é o bus da
+  // transmissão (lembrado → nomeado na mesa → designado na hora), depois abre a
+  // mix da live. Ver [enterLiveBus].
+  Future<void> _enterLive() async {
+    final bus = await enterLiveBus(context, _client);
+    if (bus == null || !mounted) return;
+    setState(() => _liveBus = bus);
+    await _openMixer(bus, mode: AppMode.live);
+  }
+
+  // Botão "trocar" na entrada Live: força a re-designação do bus da transmissão.
+  Future<void> _changeLiveBus() async {
+    final bus = await changeLiveBus(context, _client);
+    if (bus == null || !mounted) return;
+    setState(() => _liveBus = bus);
+    await _openMixer(bus, mode: AppMode.live);
+  }
+
+  Future<void> _openMixer(int bus, {AppMode mode = AppMode.stage}) async {
     if (bus != _client.busIndex) await _client.setBus(bus);
     if (!mounted) return;
     await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => MixerScreen(client: _client)),
+      MaterialPageRoute(
+        builder: (_) => MixerScreen(client: _client, mode: mode),
+      ),
     );
   }
 
@@ -96,7 +128,10 @@ class _ConnectScreenState extends State<ConnectScreen>
       ),
       body: BusPickerList(
         client: _client,
-        onPick: _openMixer,
+        excludeBus: _liveBus,
+        onLive: _enterLive,
+        onLiveEdit: _changeLiveBus,
+        onPick: (bus) => _openMixer(bus),
       ),
     );
   }

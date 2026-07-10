@@ -59,7 +59,7 @@ const _busNames = [
   'Ministro',  'Vocal 1',   'Vocal 2',    'Baixo',
   'Guita',     'Violao',    'Teclado',    'Bateria',
   'Metais',    'Sidefill',  '',           '',
-  '',          '',          '',           '',
+  '',          '',          '',           'Live', // bus 16: dedicado à transmissão
 ];
 
 final _rng = Random();

@@ -2,16 +2,21 @@ import 'package:flutter/material.dart';
 
 import '../../mixer/mixer_client.dart';
 import '../../osc/osc_codec.dart';
+import '../../state/app_mode.dart';
+import '../../state/app_settings.dart';
 import '../../state/genre_presets.dart';
 import '../../state/instrument_type.dart';
 import '../instrument_visuals.dart';
 import '../palette.dart';
 import '../widgets/bus_picker.dart';
+import '../widgets/live_entry.dart';
+import '../widgets/mode_badge.dart';
 
 class MixerScreen extends StatefulWidget {
   final MixerClient client;
+  final AppMode mode;
 
-  const MixerScreen({super.key, required this.client});
+  const MixerScreen({super.key, required this.client, required this.mode});
 
   @override
   State<MixerScreen> createState() => _MixerScreenState();
@@ -23,10 +28,19 @@ class _MixerScreenState extends State<MixerScreen> {
   // Active group filter (null = show all channels).
   InstrumentGroup? _group;
 
+  // Designated broadcast bus — hidden from the in-mix switcher in Stage mode.
+  int? _liveBus;
+
   @override
   void initState() {
     super.initState();
     _client.addListener(_onClientChange);
+    _loadLiveBus();
+  }
+
+  Future<void> _loadLiveBus() async {
+    final bus = await AppSettings.liveBus();
+    if (mounted) setState(() => _liveBus = bus);
   }
 
   @override
@@ -43,7 +57,42 @@ class _MixerScreenState extends State<MixerScreen> {
     return name != null ? '$base · $name' : base;
   }
 
-  void _showBusPicker() => showBusPicker(context, _client);
+  void _showBusPicker() {
+    final mode = widget.mode;
+    showBusPicker(
+      context,
+      _client,
+      excludeBus: mode.isLive ? null : _liveBus,
+      onLive: mode.isLive ? null : () => _switchToLive(enterLiveBus(context, _client)),
+      onLiveEdit:
+          mode.isLive ? null : () => _switchToLive(changeLiveBus(context, _client)),
+      title: mode.busPickerTitle,
+      subtitle: mode.busPickerSubtitle,
+      icon: mode.icon,
+      accent: mode.accent,
+      onPicked: (bus) async {
+        await _client.setBus(bus);
+        if (mode.isLive) {
+          await AppSettings.setLiveBus(bus);
+          if (mounted) setState(() => _liveBus = bus);
+        }
+      },
+    );
+  }
+
+  // "Trocar → Live" a partir do mixer do Stage: [future] resolve o bus da
+  // transmissão (entrar ou re-designar) e esta tela é substituída pela mix live.
+  Future<void> _switchToLive(Future<int?> future) async {
+    final bus = await future;
+    if (bus == null || !mounted) return;
+    await _client.setBus(bus);
+    if (!mounted) return;
+    await Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => MixerScreen(client: _client, mode: AppMode.live),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -118,6 +167,10 @@ class _MixerScreenState extends State<MixerScreen> {
         ],
       ),
       actions: [
+        Padding(
+          padding: const EdgeInsets.only(right: 4),
+          child: Center(child: ModeBadge(mode: widget.mode)),
+        ),
         IconButton(
           icon: Icon(
             _client.isMuted ? Icons.volume_off : Icons.volume_up,

@@ -48,6 +48,26 @@ test/           # unit tests do engine e do codec
 Aux/Mix Bus (MixBus 1–16). Caminho de escrita: `/ch/NN/mix/MM/level ,f <0..1>`.
 Ultranet/P16 está fora de escopo no MVP.
 
+## Modos (Stage/Live)
+
+Dois contextos, escolhidos **dentro do seletor de bus** (não em telas separadas):
+`enum AppMode` em `lib/state/app_mode.dart`.
+
+- **Stage** — padrão, aberto. Músico escolhe seu bus de retorno.
+- **Live** — mix da transmissão, atrás de um PIN (`kLivePin`, hoje fixo `7733`,
+  **temporário**). O bus da Live fica **escondido** do seletor do Stage para o
+  músico não o pegar.
+
+O núcleo (`MixerClient`, engine) permanece **agnóstico ao modo** — nada de "modo"
+entra no cliente/engine (preserva os invariantes #1–#3). O modo só afeta a UI
+(rótulo/acento/badge), o portão de PIN e qual bus é o alvo. Fluxo centralizado em
+`lib/ui/widgets/live_entry.dart`.
+
+Resolução do bus da Live: bus **nomeado** `Live`/`Transmissão`/`Stream`/… na mesa
+→ último lembrado (`AppSettings.liveBus`, `shared_preferences`) → designação
+manual. O PIN é anti-acidente, não segurança forte (o X32 não autentica cliente
+na rede); direção futura é provisionamento por device com tokens assinados.
+
 ## Protocolo OSC X32 — referência
 
 Fonte canônica: *Unofficial X32/M32 OSC Remote Protocol* — Patrick-Gilles Maillot.
