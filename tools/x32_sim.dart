@@ -3,6 +3,8 @@
 /// Usage:
 ///   dart run tools/x32_sim.dart              # auto-sim scenario (scripted)
 ///   dart run tools/x32_sim.dart --interactive # manual stdin control
+///   dart run tools/x32_sim.dart --web         # web faders at http://localhost:8080
+///   dart run tools/x32_sim.dart --web 9000    # web control on a custom port
 ///
 /// Supports:
 ///   /info, /xinfo        → discovery responses
@@ -18,7 +20,13 @@
 ///   reset              — reset all channels to initial levels
 ///   auto on|off        — enable/disable the scripted auto-scenario
 ///   help               — show this command list
+///
+/// Web mode (--web): a mixing-console page with one fader per instrument.
+/// Dragging a fader sets that channel's input meter level in real time, so you
+/// can simulate the band playing louder/softer and watch the app correct the
+/// monitor sends live. Enabling --web disables the scripted auto-scenario.
 
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -66,15 +74,27 @@ final _levels = List.generate(48, (i) {
 // Ramp targets: index → target level (null = no ramp active)
 final _rampTargets = List<double?>.filled(48, null);
 
+// Latest monitor send level written by the app per channel (any bus), for
+// display in the web UI. null = the app never wrote a send for this channel.
+final _lastSendPerCh = List<double?>.filled(32, null);
+
+// Connected web-control clients (--web mode).
+final _webClients = <WebSocket>[];
+
 var _tick = 0;
 var _autoSimEnabled = true;
 
 void main(List<String> args) async {
   final interactive = args.contains('--interactive') || args.contains('-i');
+  final (web, webPort) = _parseWebArgs(args);
 
   final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, kX32Port);
   print('[SIM] X32 Simulator running on UDP port $kX32Port');
-  if (interactive) {
+  if (web) {
+    _autoSimEnabled = false;
+    await _startWebServer(webPort);
+    print('[SIM] Mode: WEB — mixing console at http://localhost:$webPort');
+  } else if (interactive) {
     _autoSimEnabled = false;
     print('[SIM] Mode: INTERACTIVE — type "help" for commands');
   } else {
@@ -164,16 +184,7 @@ void _handleCommand(String line) {
       print('----------------------');
 
     case 'reset':
-      for (var i = 0; i < 48; i++) {
-        _rampTargets[i] = null;
-        if (i < 12) {
-          _levels[i] = 0.3 + _rng.nextDouble() * 0.3;
-        } else if (i < 20) {
-          _levels[i] = 0.05 + _rng.nextDouble() * 0.1;
-        } else {
-          _levels[i] = 0.0;
-        }
-      }
+      _resetLevels();
       print('[SIM] Levels reset to initial values');
 
     case 'auto':
@@ -266,6 +277,8 @@ void _handleMessage(
           // SET — update and log
           final val = msg.args[0] as double;
           _sendLevels[key] = val;
+          final chNum = int.parse(ch);
+          if (chNum >= 1 && chNum <= 32) _lastSendPerCh[chNum - 1] = val;
           print('\n[SIM] SEND ch=$ch bus=$bus float=${val.toStringAsFixed(4)}');
           _printPrompt();
         }
@@ -294,6 +307,8 @@ void _emitMetersLoop(
           _send(socket, entry.value, entry.key, packet);
         }
       }
+
+      _broadcastWeb();
 
       await Future.delayed(Duration(milliseconds: kMeterUpdateIntervalMs));
     }
@@ -359,3 +374,238 @@ void _send(RawDatagramSocket socket, InternetAddress addr, int port, Uint8List d
     socket.send(data, addr, port);
   } catch (_) {}
 }
+
+// Reset all channels to their initial (randomised) resting levels.
+void _resetLevels() {
+  for (var i = 0; i < 48; i++) {
+    _rampTargets[i] = null;
+    if (i < 12) {
+      _levels[i] = 0.3 + _rng.nextDouble() * 0.3;
+    } else if (i < 20) {
+      _levels[i] = 0.05 + _rng.nextDouble() * 0.1;
+    } else {
+      _levels[i] = 0.0;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Web control server (--web) — mixing console with one fader per instrument
+// ---------------------------------------------------------------------------
+
+(bool, int) _parseWebArgs(List<String> args) {
+  for (var i = 0; i < args.length; i++) {
+    final a = args[i];
+    if (a == '--web' || a == '-w') {
+      final next = i + 1 < args.length ? int.tryParse(args[i + 1]) : null;
+      return (true, next ?? 8080);
+    }
+    if (a.startsWith('--web=')) {
+      return (true, int.tryParse(a.substring('--web='.length)) ?? 8080);
+    }
+  }
+  return (false, 8080);
+}
+
+Future<void> _startWebServer(int port) async {
+  final server = await HttpServer.bind(InternetAddress.anyIPv4, port);
+  server.listen((req) async {
+    if (req.uri.path == '/ws') {
+      try {
+        final ws = await WebSocketTransformer.upgrade(req);
+        _webClients.add(ws);
+        ws.add(jsonEncode({'type': 'config', 'names': _channelNames}));
+        ws.listen(
+          _handleWebMessage,
+          onDone: () => _webClients.remove(ws),
+          onError: (_) => _webClients.remove(ws),
+        );
+      } catch (_) {
+        // upgrade failed — ignore
+      }
+    } else {
+      req.response.headers.contentType = ContentType.html;
+      req.response.write(_kIndexHtml);
+      await req.response.close();
+    }
+  });
+}
+
+void _handleWebMessage(dynamic data) {
+  try {
+    final msg = jsonDecode(data as String) as Map<String, dynamic>;
+    switch (msg['type']) {
+      case 'set':
+        final ch = (msg['ch'] as num).toInt();
+        final level = (msg['level'] as num).toDouble();
+        if (ch >= 1 && ch <= 32) {
+          _rampTargets[ch - 1] = null;
+          _levels[ch - 1] = level.clamp(0.0, 1.0);
+        }
+      case 'reset':
+        _resetLevels();
+    }
+  } catch (_) {
+    // malformed message — ignore
+  }
+}
+
+void _broadcastWeb() {
+  if (_webClients.isEmpty) return;
+  final payload = jsonEncode({
+    'type': 'levels',
+    'levels': [
+      for (var i = 0; i < 32; i++) double.parse(_levels[i].toStringAsFixed(4)),
+    ],
+    'sends': _lastSendPerCh,
+  });
+  for (final ws in List<WebSocket>.of(_webClients)) {
+    try {
+      ws.add(payload);
+    } catch (_) {
+      _webClients.remove(ws);
+    }
+  }
+}
+
+const _kIndexHtml = r'''<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>X32 SIM — Mesa de Instrumentos</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, sans-serif; background:#0d1117; color:#e6edf3; }
+  header { position:sticky; top:0; background:#161b22; padding:12px 16px; border-bottom:1px solid #30363d;
+           display:flex; align-items:center; gap:14px; flex-wrap:wrap; z-index:10; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  .hint { font-size:12px; color:#8b949e; }
+  .status { font-size:13px; padding:3px 10px; border-radius:12px; background:#21262d; font-weight:600; }
+  .status.ok { color:#3fb950; }
+  .status.bad { color:#f85149; }
+  button { background:#21262d; color:#e6edf3; border:1px solid #30363d; border-radius:6px;
+           padding:6px 12px; cursor:pointer; font-size:13px; }
+  button:hover { background:#30363d; }
+  .board { display:flex; flex-wrap:wrap; gap:10px; padding:16px; }
+  .ch { width:76px; background:#161b22; border:1px solid #30363d; border-radius:8px;
+        padding:8px 6px; display:flex; flex-direction:column; align-items:center; gap:6px; }
+  .ch .name { font-size:11px; text-align:center; height:26px; line-height:13px; overflow:hidden; color:#c9d1d9; }
+  .ch .val { font-size:13px; font-variant-numeric:tabular-nums; color:#58a6ff; font-weight:600; }
+  .ch .send { font-size:10px; color:#8b949e; height:13px; font-variant-numeric:tabular-nums; }
+  .fader-row { display:flex; gap:7px; height:210px; align-items:stretch; }
+  .meter { width:9px; background:#21262d; border-radius:3px; position:relative; overflow:hidden; }
+  .meter .fill { position:absolute; bottom:0; left:0; right:0;
+                 background:linear-gradient(to top,#3fb950,#3fb950 60%,#d29922 82%,#f85149);
+                 height:0%; transition:height .05s linear; }
+  input[type=range] { writing-mode:vertical-lr; direction:rtl; width:24px; height:210px;
+                      accent-color:#58a6ff; cursor:pointer; }
+</style>
+</head>
+<body>
+<header>
+  <h1>&#127899; X32 SIM &mdash; Mesa de Instrumentos</h1>
+  <span id="status" class="status bad">desconectado</span>
+  <button id="reset">Reset</button>
+  <span class="hint">Arraste os faders para simular os m&uacute;sicos tocando &mdash; a barra colorida &eacute; o n&iacute;vel captado; &ldquo;&rarr;&rdquo; &eacute; o retorno que o app est&aacute; enviando.</span>
+</header>
+<div class="board" id="board"></div>
+<script>
+  var board = document.getElementById("board");
+  var statusEl = document.getElementById("status");
+  var faders = [], fills = [], vals = [], sends = [];
+  var initialized = false;
+  var ws;
+
+  function buildBoard(names) {
+    board.innerHTML = "";
+    faders = []; fills = []; vals = []; sends = [];
+    for (var i = 0; i < 32; i++) {
+      var card = document.createElement("div");
+      card.className = "ch";
+
+      var name = document.createElement("div");
+      name.className = "name";
+      name.textContent = (i + 1) + ". " + (names[i] || ("Ch " + (i + 1)));
+
+      var val = document.createElement("div");
+      val.className = "val";
+      val.textContent = "0%";
+
+      var row = document.createElement("div");
+      row.className = "fader-row";
+      var meter = document.createElement("div");
+      meter.className = "meter";
+      var fill = document.createElement("div");
+      fill.className = "fill";
+      meter.appendChild(fill);
+      var fader = document.createElement("input");
+      fader.type = "range";
+      fader.min = "0"; fader.max = "1"; fader.step = "0.01"; fader.value = "0";
+      (function (idx, f, v) {
+        f.addEventListener("input", function () {
+          v.textContent = Math.round(f.value * 100) + "%";
+          send({ type: "set", ch: idx + 1, level: parseFloat(f.value) });
+        });
+      })(i, fader, val);
+      row.appendChild(meter);
+      row.appendChild(fader);
+
+      var snd = document.createElement("div");
+      snd.className = "send";
+      snd.textContent = "";
+
+      card.appendChild(name);
+      card.appendChild(val);
+      card.appendChild(row);
+      card.appendChild(snd);
+      board.appendChild(card);
+
+      faders.push(fader); fills.push(fill); vals.push(val); sends.push(snd);
+    }
+  }
+
+  function send(obj) {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+  }
+
+  function connect() {
+    ws = new WebSocket("ws://" + location.host + "/ws");
+    ws.onopen = function () { statusEl.textContent = "conectado"; statusEl.className = "status ok"; };
+    ws.onclose = function () {
+      statusEl.textContent = "desconectado"; statusEl.className = "status bad";
+      setTimeout(connect, 1000);
+    };
+    ws.onmessage = function (ev) {
+      var m = JSON.parse(ev.data);
+      if (m.type === "config") {
+        initialized = false;
+        buildBoard(m.names);
+      } else if (m.type === "levels") {
+        for (var i = 0; i < 32; i++) {
+          var lv = m.levels[i];
+          if (fills[i]) fills[i].style.height = Math.round(lv * 100) + "%";
+          if (!initialized && faders[i]) {
+            faders[i].value = lv;
+            vals[i].textContent = Math.round(lv * 100) + "%";
+          }
+          if (sends[i]) {
+            sends[i].textContent = (m.sends[i] == null)
+              ? "" : ("→ " + Math.round(m.sends[i] * 100) + "%");
+          }
+        }
+        initialized = true;
+      }
+    };
+  }
+
+  document.getElementById("reset").addEventListener("click", function () {
+    initialized = false;
+    send({ type: "reset" });
+  });
+
+  connect();
+</script>
+</body>
+</html>''';
