@@ -81,10 +81,14 @@ class MixerClient extends ChangeNotifier {
   final List<InstrumentType> instruments =
       List.filled(kInputChannelCount, InstrumentType.unknown);
 
+  /// Mix bus names read from the mixer (`/bus/NN/config/name`). Index 0 = bus 1.
+  final List<String?> busNames = List.filled(kMixBusCount, null);
+
   static final _reChName = RegExp(r'^/ch/(\d{2})/config/name$');
   static final _reChIcon = RegExp(r'^/ch/(\d{2})/config/icon$');
   static final _reChColor = RegExp(r'^/ch/(\d{2})/config/color$');
   static final _reChSendLevel = RegExp(r'^/ch/(\d{2})/mix/(\d{2})/level$');
+  static final _reBusName = RegExp(r'^/bus/(\d{2})/config/name$');
 
   String? get mixerIp => _mixerIp;
   String? get mixerName => _mixerName;
@@ -92,6 +96,14 @@ class MixerClient extends ChangeNotifier {
   bool get isConnected => _connected;
   bool get isDiscovering => _discovering;
   int get busIndex => _busIndex;
+
+  /// Name of the currently selected bus, or null if the mixer hasn't sent one
+  /// (or the bus has no name configured).
+  String? get busName {
+    final n = busNames[(_busIndex - 1).clamp(0, kMixBusCount - 1)];
+    return (n != null && n.isNotEmpty) ? n : null;
+  }
+
   Genre get genre => _genre;
   bool get autoMixActive => _engine.isActive;
   bool get isMuted => _muted;
@@ -102,6 +114,24 @@ class MixerClient extends ChangeNotifier {
   set busIndex(int v) {
     _busIndex = v.clamp(1, kMixBusCount);
     notifyListeners();
+  }
+
+  /// Switch the return bus at runtime. Restores the previous bus to its
+  /// baseline first (via [disableAutoMix]), then re-reads the send levels for
+  /// the new bus. Auto-mix is turned off for safety so no stale corrections
+  /// leak onto the newly selected bus.
+  Future<void> setBus(int index) async {
+    final next = index.clamp(1, kMixBusCount);
+    if (next == _busIndex) return;
+    if (_engine.isActive) disableAutoMix();
+    if (_muted) {
+      _muted = false;
+      _preMuteLevels.clear();
+    }
+    _busIndex = next;
+    _baselineLevels.clear();
+    notifyListeners();
+    await _fetchSendLevels();
   }
 
   void setGenre(Genre g) {
@@ -240,6 +270,7 @@ class MixerClient extends ChangeNotifier {
     _socket!.listen(_onData);
 
     await _fetchChannelConfig();
+    await _fetchBusNames();
 
     // Subscribe to meters and start throttled UI refresh
     _subscribeMeter();
@@ -320,6 +351,28 @@ class MixerClient extends ChangeNotifier {
     await Future.delayed(const Duration(milliseconds: 500));
   }
 
+  /// Request the names of all mix buses so the UI can label the bus picker.
+  /// `/bus/NN/config/name` — CONFIRM AGAINST REAL HARDWARE.
+  Future<void> _fetchBusNames() async {
+    if (_socket == null) return;
+    for (var bus = 1; bus <= kMixBusCount; bus++) {
+      final pad = bus.toString().padLeft(2, '0');
+      _send(encodeOsc('/bus/$pad/config/name', ',', []));
+      await Future.delayed(const Duration(milliseconds: 15));
+    }
+  }
+
+  /// Re-read send levels for the current bus (used after [setBus]).
+  Future<void> _fetchSendLevels() async {
+    if (_socket == null) return;
+    final busPad = _busIndex.toString().padLeft(2, '0');
+    for (var ch = 1; ch <= kInputChannelCount; ch++) {
+      final pad = ch.toString().padLeft(2, '0');
+      _send(encodeOsc('/ch/$pad/mix/$busPad/level', ',', []));
+      await Future.delayed(const Duration(milliseconds: 15));
+    }
+  }
+
   void _onData(RawSocketEvent event) {
     if (event != RawSocketEvent.read) return;
     final dg = _socket?.receive();
@@ -331,6 +384,18 @@ class MixerClient extends ChangeNotifier {
       _mixerName = msg.args[1] as String;
       _mixerModel = msg.args[2] as String;
       notifyListeners();
+      return;
+    }
+
+    // Bus name response — /bus/NN/config/name ,s <name>
+    final busNameMatch = _reBusName.firstMatch(msg.address);
+    if (busNameMatch != null && msg.args.isNotEmpty) {
+      final bus = int.parse(busNameMatch.group(1)!);
+      final idx = bus - 1;
+      if (idx >= 0 && idx < busNames.length) {
+        busNames[idx] = (msg.args[0] as String).trim();
+        notifyListeners();
+      }
       return;
     }
 

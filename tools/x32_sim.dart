@@ -7,6 +7,7 @@
 /// Supports:
 ///   /info, /xinfo        → discovery responses
 ///   /ch/NN/config/name   → synthetic channel names
+///   /bus/NN/config/name  → synthetic mix-bus (monitor) names
 ///   /meters ,s "/meters/13"  → subscription; emits meter blobs every 50ms
 ///   /ch/NN/mix/MM/level  → logs received send writes to stdout
 ///
@@ -40,6 +41,17 @@ const _channelNames = [
   'Overhead L',  'Overhead R', 'Room',         'Metais',
   'Ch 25', 'Ch 26', 'Ch 27', 'Ch 28',
   'Ch 29', 'Ch 30', 'Ch 31', 'Ch 32',
+];
+
+// Synthetic mix-bus (monitor) names — buses 1..16. Names as a worship team
+// would actually label them on the console (X32 caps names at 12 chars).
+// Trailing empty strings mimic buses the engineer never named, so the app
+// can show its "Bus N" fallback.
+const _busNames = [
+  'Ministro',  'Vocal 1',   'Vocal 2',    'Baixo',
+  'Guita',     'Violao',    'Teclado',    'Bateria',
+  'Metais',    'Sidefill',  '',           '',
+  '',          '',          '',           '',
 ];
 
 final _rng = Random();
@@ -228,6 +240,14 @@ void _handleMessage(
       if (nameMatch != null && msg.args.isEmpty) {
         final ch = int.parse(nameMatch.group(1)!) - 1;
         final name = ch < _channelNames.length ? _channelNames[ch] : 'Ch ${ch + 1}';
+        _send(socket, src, srcPort, encodeOsc(msg.address, ',s', [name]));
+        return;
+      }
+
+      final busNameMatch = RegExp(r'^/bus/(\d{2})/config/name$').firstMatch(msg.address);
+      if (busNameMatch != null && msg.args.isEmpty) {
+        final bus = int.parse(busNameMatch.group(1)!) - 1;
+        final name = bus >= 0 && bus < _busNames.length ? _busNames[bus] : '';
         _send(socket, src, srcPort, encodeOsc(msg.address, ',s', [name]));
         return;
       }

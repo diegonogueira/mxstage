@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 import '../../mixer/mixer_client.dart';
 import '../../osc/osc_codec.dart';
 import '../../state/genre_presets.dart';
+import '../../state/instrument_type.dart';
+import '../instrument_visuals.dart';
+import '../widgets/bus_picker.dart';
 
 class MixerScreen extends StatefulWidget {
   final MixerClient client;
@@ -15,6 +18,9 @@ class MixerScreen extends StatefulWidget {
 
 class _MixerScreenState extends State<MixerScreen> {
   MixerClient get _client => widget.client;
+
+  // Active group filter (null = show all channels).
+  InstrumentGroup? _group;
 
   @override
   void initState() {
@@ -30,9 +36,30 @@ class _MixerScreenState extends State<MixerScreen> {
 
   void _onClientChange() => setState(() {});
 
+  String _busLabel() {
+    final name = _client.busName;
+    final base = 'Bus ${_client.busIndex}';
+    return name != null ? '$base · $name' : base;
+  }
+
+  void _showBusPicker() => showBusPicker(context, _client);
+
   @override
   Widget build(BuildContext context) {
     final isLandscape = MediaQuery.orientationOf(context) == Orientation.landscape;
+
+    // Which groups actually have channels right now (so we don't show empty tabs).
+    final present = <InstrumentGroup>{
+      for (final ch in _client.channels)
+        instrumentGroup(_client.instruments[ch.ch - 1]),
+    };
+    if (_group != null && !present.contains(_group)) _group = null;
+
+    final visible = _group == null
+        ? _client.channels
+        : _client.channels
+            .where((c) => instrumentGroup(_client.instruments[c.ch - 1]) == _group)
+            .toList();
 
     return Scaffold(
       backgroundColor: const Color(0xFF0A0A0A),
@@ -40,9 +67,15 @@ class _MixerScreenState extends State<MixerScreen> {
       body: Column(
         children: [
           _AutoMixBar(client: _client),
+          _GroupTabs(
+            present: present,
+            selected: _group,
+            onSelected: (g) => setState(() => _group = g),
+          ),
           Expanded(
             child: _FaderBoard(
-              channels: _client.channels,
+              channels: visible,
+              instruments: _client.instruments,
               muted: _client.isMuted,
               isLandscape: isLandscape,
               meterDb: _client.meterDisplayDb,
@@ -64,9 +97,22 @@ class _MixerScreenState extends State<MixerScreen> {
             _client.mixerName ?? 'Mixer',
             style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
           ),
-          Text(
-            'Bus ${_client.busIndex}',
-            style: const TextStyle(fontSize: 11, color: Colors.white38),
+          InkWell(
+            onTap: _showBusPicker,
+            borderRadius: BorderRadius.circular(4),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: Text(
+                    _busLabel(),
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 11, color: Colors.white54),
+                  ),
+                ),
+                const Icon(Icons.arrow_drop_down, size: 15, color: Colors.white38),
+              ],
+            ),
           ),
         ],
       ),
@@ -205,6 +251,75 @@ class _GenreDropdown extends StatelessWidget {
               )
               .toList(),
         ),
+      ),
+    );
+  }
+}
+
+// ── Group filter tabs ─────────────────────────────────────────────────────────
+
+class _GroupTabs extends StatelessWidget {
+  final Set<InstrumentGroup> present;
+  final InstrumentGroup? selected;
+  final ValueChanged<InstrumentGroup?> onSelected;
+
+  const _GroupTabs({
+    required this.present,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final groups = kInstrumentGroupOrder.where(present.contains).toList();
+    // Only one family present — nothing meaningful to filter by.
+    if (groups.length < 2) return const SizedBox.shrink();
+
+    Widget chip(String label, IconData icon, bool sel, VoidCallback onTap) {
+      return Padding(
+        padding: const EdgeInsets.only(right: 6),
+        child: ChoiceChip(
+          label: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 13, color: sel ? Colors.black : Colors.white54),
+              const SizedBox(width: 4),
+              Text(label),
+            ],
+          ),
+          selected: sel,
+          onSelected: (_) => onTap(),
+          showCheckmark: false,
+          backgroundColor: const Color(0xFF1A1A1A),
+          selectedColor: const Color(0xFF2AAF8E),
+          side: BorderSide(
+            color: sel ? Colors.transparent : const Color(0xFF262626),
+          ),
+          labelStyle: TextStyle(
+            fontSize: 12,
+            color: sel ? Colors.black : Colors.white70,
+            fontWeight: FontWeight.w500,
+          ),
+          visualDensity: VisualDensity.compact,
+          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+      );
+    }
+
+    return Container(
+      height: 44,
+      decoration: const BoxDecoration(
+        color: Color(0xFF0D0D0D),
+        border: Border(bottom: BorderSide(color: Color(0xFF1A1A1A))),
+      ),
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        children: [
+          chip('Todos', Icons.apps, selected == null, () => onSelected(null)),
+          for (final g in groups)
+            chip(g.label, g.icon, selected == g, () => onSelected(g)),
+        ],
       ),
     );
   }
@@ -375,6 +490,7 @@ const _prereqs = [
 
 class _FaderBoard extends StatelessWidget {
   final List<ChannelInfo> channels;
+  final List<InstrumentType> instruments; // full list, indexed by ch-1
   final bool muted;
   final bool isLandscape;
   final double Function(int channelIndex) meterDb;
@@ -382,6 +498,7 @@ class _FaderBoard extends StatelessWidget {
 
   const _FaderBoard({
     required this.channels,
+    required this.instruments,
     required this.muted,
     required this.isLandscape,
     required this.meterDb,
@@ -404,11 +521,15 @@ class _FaderBoard extends StatelessWidget {
         ),
         itemBuilder: (context, i) {
           final ch = channels[i];
+          final chIdx = ch.ch - 1;
           return _ChannelStrip(
             channel: ch,
+            instrument: chIdx >= 0 && chIdx < instruments.length
+                ? instruments[chIdx]
+                : InstrumentType.unknown,
             width: stripW,
             muted: muted,
-            meterDb: meterDb(i),
+            meterDb: meterDb(chIdx),
             onLevelChanged: (v) => onLevelChanged(ch.ch, v),
           );
         },
@@ -419,6 +540,7 @@ class _FaderBoard extends StatelessWidget {
 
 class _ChannelStrip extends StatelessWidget {
   final ChannelInfo channel;
+  final InstrumentType instrument;
   final double width;
   final bool muted;
   final double meterDb;
@@ -426,6 +548,7 @@ class _ChannelStrip extends StatelessWidget {
 
   const _ChannelStrip({
     required this.channel,
+    required this.instrument,
     required this.width,
     required this.muted,
     required this.meterDb,
@@ -438,11 +561,18 @@ class _ChannelStrip extends StatelessWidget {
     final dbLabel = db <= -89 ? '-∞' : db.toStringAsFixed(1);
     final active = !muted && channel.sendLevel > 0.001;
 
+    final known = instrument != InstrumentType.unknown;
+    final idColor = muted
+        ? Colors.white12
+        : known
+            ? const Color(0xFF2AAF8E)
+            : Colors.amberAccent;
+
     return SizedBox(
       width: width,
       child: Column(
         children: [
-          // Header: channel number + name
+          // Header: channel number + mixer name + what the app identified
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 6),
             child: Column(
@@ -455,13 +585,36 @@ class _ChannelStrip extends StatelessWidget {
                 Text(
                   channel.name,
                   textAlign: TextAlign.center,
-                  maxLines: 2,
+                  maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 11,
                     color: muted ? Colors.white12 : Colors.white70,
                     height: 1.2,
                   ),
+                ),
+                const SizedBox(height: 3),
+                // Identified instrument — amber flags an unrecognised channel
+                // whose auto-mix target is falling back to the generic default.
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(instrumentIcon(instrument), size: 10, color: idColor),
+                    const SizedBox(width: 3),
+                    Flexible(
+                      child: Text(
+                        known ? instrument.label : '?',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 9,
+                          height: 1.1,
+                          color: idColor,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),

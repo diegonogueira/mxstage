@@ -70,4 +70,36 @@ void main() {
     client.setChannelSend(1, -0.5);
     expect(client.channels[0].sendLevel, 0.0);
   });
+
+  test('connect populates bus names; busName reflects selected bus', () {
+    // The fake X32 answers /bus/NN/config/name with 'Ch NN'.
+    expect(client.busNames[0], 'Ch 01');
+    expect(client.busName, 'Ch 03'); // connected on busIndex 3
+  });
+
+  test('setBus switches bus and re-reads send levels for the new bus', () async {
+    received.clear();
+    await client.setBus(5);
+
+    expect(client.busIndex, 5);
+    await Future.delayed(const Duration(milliseconds: 100));
+    // Re-fetch issues a GET (empty args) on the new bus.
+    expect(
+      received.any((m) => m.address == '/ch/01/mix/05/level' && m.args.isEmpty),
+      isTrue,
+    );
+  });
+
+  test('setChannelSend targets the newly selected bus after setBus', () async {
+    await client.setBus(6);
+    received.clear();
+
+    client.setChannelSend(8, 0.5);
+    await Future.delayed(const Duration(milliseconds: 100));
+
+    // Only the selected bus is ever written (safety invariant).
+    final writes = received.where((m) => m.address.endsWith('/level') && m.args.isNotEmpty);
+    expect(writes, isNotEmpty);
+    expect(writes.every((m) => m.address == '/ch/08/mix/06/level'), isTrue);
+  });
 }
