@@ -17,265 +17,215 @@ extension GenreLabel on Genre {
       };
 }
 
-/// Target balance for a genre — dB relative to lead vocal (0 dB anchor).
+/// Neutral base balance — dB relative to the lead vocal (0 dB anchor).
 ///
-/// Negative = quieter than the lead vocal.
-/// Calibrated for in-ear / personal monitor mixes (not FOH).
-/// In IEMs, drums lose natural room bleed, so they need much more
-/// attenuation than a studio mix reference would suggest.
+/// This is the "nobody dominates" profile the Auto-Mix always levels toward.
+/// Negative = quieter than the lead vocal. Calibrated for in-ear / personal
+/// monitor mixes (not FOH): in IEMs drums lose natural room bleed, so they need
+/// much more attenuation than a studio reference would suggest.
+///
+/// Genre presets never replace this profile — they only add a per-instrument
+/// gain on top of it (see [kGenreDeltas]). So selecting a genre *flavours* the
+/// neutral leveling; it never "marreta" (overrides) the whole balance.
+const Map<InstrumentType, double> kBaseProfile = {
+  InstrumentType.leadVocal: 0.0,
+  InstrumentType.backingVocal: -5.0,
+  InstrumentType.guitar: -7.0,
+  InstrumentType.keys: -7.0,
+  InstrumentType.piano: -7.0,
+  InstrumentType.acoustic: -7.0,
+  InstrumentType.strings: -7.0,
+  InstrumentType.bass: -8.0,
+  InstrumentType.sax: -8.0,
+  InstrumentType.brass: -8.0,
+  InstrumentType.kick: -15.0,
+  InstrumentType.snare: -15.0,
+  InstrumentType.drums: -15.0,
+  InstrumentType.percussion: -13.0,
+  InstrumentType.overhead: -20.0,
+  InstrumentType.hihat: -20.0,
+  InstrumentType.unknown: -9.0,
+};
+
+/// Per-genre gain over [kBaseProfile] (dB). Positive = emphasise this
+/// instrument for the style, negative = pull it back. Absent = 0 (use the base
+/// value unchanged). These deltas were derived from the previously hand-tuned
+/// per-genre profiles, so the effective target ([GenrePreset.targetFor]) is
+/// identical to the old calibration — just re-expressed as "flavour over
+/// neutral" so a preset only nudges the mix instead of redefining it.
+const Map<Genre, Map<InstrumentType, double>> kGenreDeltas = {
+  Genre.general: {}, // the neutral base itself — no flavour.
+  Genre.worship: {
+    // Vocal layers prominent, ambient pads/keys and acoustic guitar signature;
+    // drums purely supportive (overheads nearly absent in IEMs).
+    InstrumentType.backingVocal: 1.0,
+    InstrumentType.acoustic: 2.0,
+    InstrumentType.keys: 2.0,
+    InstrumentType.strings: 1.0,
+    InstrumentType.piano: 1.0,
+    InstrumentType.bass: -1.0,
+    InstrumentType.kick: -2.0,
+    InstrumentType.snare: -4.0,
+    InstrumentType.drums: -3.0,
+    InstrumentType.percussion: -3.0,
+    InstrumentType.overhead: -4.0,
+    InstrumentType.hihat: -3.0,
+    InstrumentType.sax: -1.0,
+    InstrumentType.brass: -2.0,
+  },
+  Genre.groove: {
+    // Funk / Soul: bass + kick lock is the backbone; guitar chops, brass and
+    // percussion stay prominent.
+    InstrumentType.backingVocal: 1.0,
+    InstrumentType.bass: 3.0,
+    InstrumentType.guitar: 1.0,
+    InstrumentType.sax: 3.0,
+    InstrumentType.brass: 3.0,
+    InstrumentType.keys: 1.0,
+    InstrumentType.percussion: 4.0,
+    InstrumentType.snare: 2.0,
+    InstrumentType.kick: 2.0,
+    InstrumentType.drums: 1.0,
+    InstrumentType.acoustic: -2.0,
+    InstrumentType.hihat: 4.0,
+    InstrumentType.strings: -1.0,
+    InstrumentType.unknown: 1.0,
+  },
+  Genre.blues: {
+    // Lead guitar shares the spotlight with the voice; piano and sax present.
+    InstrumentType.guitar: 3.0,
+    InstrumentType.acoustic: 3.0,
+    InstrumentType.piano: 2.0,
+    InstrumentType.sax: 3.0,
+    InstrumentType.brass: 2.0,
+    InstrumentType.backingVocal: -1.0,
+    InstrumentType.bass: 1.0,
+    InstrumentType.kick: 1.0,
+    InstrumentType.percussion: -4.0,
+    InstrumentType.overhead: -1.0,
+    InstrumentType.hihat: 1.0,
+    InstrumentType.strings: -2.0,
+  },
+  Genre.rb: {
+    // Smooth blend, backing vocals nearly co-lead, bass and synths prominent.
+    InstrumentType.backingVocal: 2.0,
+    InstrumentType.bass: 3.0,
+    InstrumentType.keys: 2.0,
+    InstrumentType.piano: 1.0,
+    InstrumentType.sax: 2.0,
+    InstrumentType.brass: 1.0,
+    InstrumentType.percussion: 3.0,
+    InstrumentType.kick: 1.0,
+    InstrumentType.acoustic: -2.0,
+    InstrumentType.hihat: 1.0,
+    InstrumentType.overhead: -1.0,
+    InstrumentType.unknown: 1.0,
+  },
+  Genre.pop: {
+    // Vocal dominant, backing vocals close, clean production.
+    InstrumentType.backingVocal: 1.0,
+    InstrumentType.keys: 1.0,
+    InstrumentType.kick: 1.0,
+    InstrumentType.piano: -1.0,
+    InstrumentType.acoustic: -1.0,
+    InstrumentType.brass: -1.0,
+    InstrumentType.overhead: -1.0,
+  },
+  Genre.gospel: {
+    // Big choir and BGVs critical, energetic but vocal-dominant.
+    InstrumentType.guitar: -2.0,
+    InstrumentType.acoustic: -1.0,
+    InstrumentType.bass: -1.0,
+    InstrumentType.kick: -1.0,
+    InstrumentType.snare: -3.0,
+    InstrumentType.hihat: -2.0,
+    InstrumentType.drums: -3.0,
+    InstrumentType.percussion: -4.0,
+    InstrumentType.sax: 1.0,
+    InstrumentType.strings: -1.0,
+    InstrumentType.unknown: -1.0,
+  },
+  Genre.rock: {
+    // Guitars prominent, drums most present of all genres (intentional energy).
+    InstrumentType.backingVocal: -2.0,
+    InstrumentType.guitar: 2.0,
+    InstrumentType.bass: 1.0,
+    InstrumentType.kick: 3.0,
+    InstrumentType.snare: 3.0,
+    InstrumentType.hihat: 3.0,
+    InstrumentType.overhead: 4.0,
+    InstrumentType.drums: 2.0,
+    InstrumentType.keys: -3.0,
+    InstrumentType.piano: -3.0,
+    InstrumentType.acoustic: -3.0,
+    InstrumentType.percussion: 1.0,
+    InstrumentType.strings: -3.0,
+    InstrumentType.unknown: -1.0,
+  },
+  Genre.jazz: {
+    // Ride cymbal (overhead) is the rhythmic pulse; kick barely audible.
+    // Sax/piano/acoustic co-lead with the vocal.
+    InstrumentType.sax: 5.0,
+    InstrumentType.acoustic: 3.0,
+    InstrumentType.piano: 3.0,
+    InstrumentType.brass: 4.0,
+    InstrumentType.keys: 2.0,
+    InstrumentType.bass: 3.0,
+    InstrumentType.strings: 2.0,
+    InstrumentType.guitar: 1.0,
+    InstrumentType.backingVocal: -2.0,
+    InstrumentType.overhead: 8.0,
+    InstrumentType.hihat: 6.0,
+    InstrumentType.kick: -3.0,
+    InstrumentType.snare: -3.0,
+    InstrumentType.drums: -1.0,
+    InstrumentType.percussion: 1.0,
+    InstrumentType.unknown: 1.0,
+  },
+  Genre.acoustic: {
+    // Voice / guitar / piano dominant, minimal drums.
+    InstrumentType.acoustic: 3.0,
+    InstrumentType.strings: 3.0,
+    InstrumentType.piano: 2.0,
+    InstrumentType.guitar: 2.0,
+    InstrumentType.keys: 1.0,
+    InstrumentType.sax: 2.0,
+    InstrumentType.brass: 1.0,
+    InstrumentType.kick: -3.0,
+    InstrumentType.snare: -5.0,
+    InstrumentType.overhead: -2.0,
+    InstrumentType.drums: -5.0,
+    InstrumentType.percussion: -4.0,
+    InstrumentType.hihat: -4.0,
+    InstrumentType.unknown: 1.0,
+  },
+};
+
+/// Target balance for a genre — neutral base plus a per-instrument flavour.
+///
+/// [targetFor] returns dB relative to the lead vocal (0 dB anchor). The engine
+/// levels every channel toward this profile; the genre only shifts the base.
 class GenrePreset {
   final Genre genre;
-  final Map<InstrumentType, double> relativeDb;
 
-  const GenrePreset({required this.genre, required this.relativeDb});
+  /// Per-instrument gain over [kBaseProfile] (dB). Absent = 0.
+  final Map<InstrumentType, double> deltaDb;
 
-  double targetFor(InstrumentType type) =>
-      relativeDb[type] ?? relativeDb[InstrumentType.unknown] ?? -10.0;
+  const GenrePreset({required this.genre, this.deltaDb = const {}});
+
+  /// Effective target = neutral base + genre delta. dB relative to lead vocal.
+  double targetFor(InstrumentType type) {
+    final base = kBaseProfile[type] ?? kBaseProfile[InstrumentType.unknown] ?? -10.0;
+    return base + deltaFor(type);
+  }
+
+  /// Genre flavour for [type] (dB over the neutral base). For UI display —
+  /// e.g. a "+3" chip on the guitar in Rock. 0 = neutral.
+  double deltaFor(InstrumentType type) => deltaDb[type] ?? 0.0;
 }
 
-const Map<Genre, GenrePreset> kGenrePresets = {
-  Genre.general: GenrePreset(
-    genre: Genre.general,
-    // Neutral starting point — vocal dominant, no genre flavour.
-    // Use before capture or when the genre doesn't fit another preset.
-    relativeDb: {
-      InstrumentType.leadVocal: 0.0,
-      InstrumentType.backingVocal: -5.0,
-      InstrumentType.guitar: -7.0,
-      InstrumentType.keys: -7.0,
-      InstrumentType.piano: -7.0,
-      InstrumentType.acoustic: -7.0,
-      InstrumentType.strings: -7.0,
-      InstrumentType.bass: -8.0,
-      InstrumentType.sax: -8.0,
-      InstrumentType.brass: -8.0,
-      InstrumentType.kick: -15.0,
-      InstrumentType.snare: -15.0,
-      InstrumentType.drums: -15.0,
-      InstrumentType.percussion: -13.0,
-      InstrumentType.overhead: -20.0,
-      InstrumentType.hihat: -20.0,
-      InstrumentType.unknown: -9.0,
-    },
-  ),
-  Genre.worship: GenrePreset(
-    genre: Genre.worship,
-    // Contemporary worship (Hillsong / Bethel style):
-    // vocal layers very prominent, ambient pads/keys essential, acoustic guitar
-    // signature sound. Drums purely supportive — overheads nearly absent
-    // (room bleed is lost in IEMs; at -13 they overwhelm the vocal).
-    relativeDb: {
-      InstrumentType.leadVocal: 0.0,
-      InstrumentType.backingVocal: -4.0,
-      InstrumentType.acoustic: -5.0,
-      InstrumentType.keys: -5.0,
-      InstrumentType.strings: -6.0,
-      InstrumentType.piano: -6.0,
-      InstrumentType.guitar: -7.0,
-      InstrumentType.bass: -9.0,
-      InstrumentType.kick: -17.0,
-      InstrumentType.snare: -19.0,
-      InstrumentType.drums: -18.0,
-      InstrumentType.percussion: -16.0,
-      InstrumentType.overhead: -24.0,
-      InstrumentType.hihat: -23.0,
-      InstrumentType.sax: -9.0,
-      InstrumentType.brass: -10.0,
-      InstrumentType.unknown: -9.0,
-    },
-  ),
-  Genre.groove: GenrePreset(
-    genre: Genre.groove,
-    // Funk / Soul: bass and kick lock is the groove backbone — but in a
-    // personal monitor the kick was nearly as loud as the vocal at -6 dB.
-    // Guitar rhythmic chops, brass and percussion stay prominent.
-    relativeDb: {
-      InstrumentType.leadVocal: 0.0,
-      InstrumentType.backingVocal: -4.0,
-      InstrumentType.bass: -5.0,
-      InstrumentType.guitar: -6.0,
-      InstrumentType.sax: -5.0,
-      InstrumentType.brass: -5.0,
-      InstrumentType.keys: -6.0,
-      InstrumentType.percussion: -9.0,
-      InstrumentType.snare: -13.0,
-      InstrumentType.piano: -7.0,
-      InstrumentType.kick: -13.0,
-      InstrumentType.drums: -14.0,
-      InstrumentType.acoustic: -9.0,
-      InstrumentType.hihat: -16.0,
-      InstrumentType.overhead: -20.0,
-      InstrumentType.strings: -8.0,
-      InstrumentType.unknown: -8.0,
-    },
-  ),
-  Genre.blues: GenrePreset(
-    genre: Genre.blues,
-    // Blues: lead guitar shares the spotlight with the voice.
-    // Blues piano and sax very present. Rhythm section supportive.
-    relativeDb: {
-      InstrumentType.leadVocal: 0.0,
-      InstrumentType.guitar: -4.0,
-      InstrumentType.acoustic: -4.0,
-      InstrumentType.piano: -5.0,
-      InstrumentType.sax: -5.0,
-      InstrumentType.brass: -6.0,
-      InstrumentType.backingVocal: -6.0,
-      InstrumentType.bass: -7.0,
-      InstrumentType.keys: -7.0,
-      InstrumentType.kick: -14.0,
-      InstrumentType.snare: -15.0,
-      InstrumentType.drums: -15.0,
-      InstrumentType.percussion: -17.0,
-      InstrumentType.overhead: -21.0,
-      InstrumentType.hihat: -19.0,
-      InstrumentType.strings: -9.0,
-      InstrumentType.unknown: -9.0,
-    },
-  ),
-  Genre.rb: GenrePreset(
-    genre: Genre.rb,
-    // R&B: smooth blend, backing vocals very prominent (nearly co-lead),
-    // bass and synths prominent. Kick at -6 was severely miscalibrated.
-    relativeDb: {
-      InstrumentType.leadVocal: 0.0,
-      InstrumentType.backingVocal: -3.0,
-      InstrumentType.bass: -5.0,
-      InstrumentType.keys: -5.0,
-      InstrumentType.piano: -6.0,
-      InstrumentType.sax: -6.0,
-      InstrumentType.snare: -15.0,
-      InstrumentType.guitar: -7.0,
-      InstrumentType.brass: -7.0,
-      InstrumentType.strings: -7.0,
-      InstrumentType.percussion: -10.0,
-      InstrumentType.kick: -14.0,
-      InstrumentType.drums: -15.0,
-      InstrumentType.acoustic: -9.0,
-      InstrumentType.hihat: -19.0,
-      InstrumentType.overhead: -21.0,
-      InstrumentType.unknown: -8.0,
-    },
-  ),
-  Genre.pop: GenrePreset(
-    genre: Genre.pop,
-    // Modern pop: vocal dominant, backing vocals close, clean production.
-    // Drums present but not competing — kick at -8 was too high for IEM.
-    relativeDb: {
-      InstrumentType.leadVocal: 0.0,
-      InstrumentType.backingVocal: -4.0,
-      InstrumentType.keys: -6.0,
-      InstrumentType.bass: -8.0,
-      InstrumentType.guitar: -7.0,
-      InstrumentType.kick: -14.0,
-      InstrumentType.snare: -15.0,
-      InstrumentType.piano: -8.0,
-      InstrumentType.strings: -7.0,
-      InstrumentType.acoustic: -8.0,
-      InstrumentType.sax: -8.0,
-      InstrumentType.brass: -9.0,
-      InstrumentType.drums: -15.0,
-      InstrumentType.percussion: -13.0,
-      InstrumentType.hihat: -20.0,
-      InstrumentType.overhead: -21.0,
-      InstrumentType.unknown: -9.0,
-    },
-  ),
-  Genre.gospel: GenrePreset(
-    genre: Genre.gospel,
-    // Gospel: big choir and BGVs are critical, energetic but vocal-dominant.
-    // Was the closest preset to correct; drum values moved down ~4 dB.
-    relativeDb: {
-      InstrumentType.leadVocal: 0.0,
-      InstrumentType.backingVocal: -5.0,
-      InstrumentType.keys: -7.0,
-      InstrumentType.piano: -7.0,
-      InstrumentType.guitar: -9.0,
-      InstrumentType.acoustic: -8.0,
-      InstrumentType.bass: -9.0,
-      InstrumentType.kick: -16.0,
-      InstrumentType.snare: -18.0,
-      InstrumentType.hihat: -22.0,
-      InstrumentType.overhead: -20.0,
-      InstrumentType.drums: -18.0,
-      InstrumentType.percussion: -17.0,
-      InstrumentType.sax: -7.0,
-      InstrumentType.brass: -8.0,
-      InstrumentType.strings: -8.0,
-      InstrumentType.unknown: -10.0,
-    },
-  ),
-  Genre.rock: GenrePreset(
-    genre: Genre.rock,
-    // Rock: guitars prominent, drums most present of all genres but still
-    // below vocal. Smallest drum correction — rock energy is intentional.
-    relativeDb: {
-      InstrumentType.leadVocal: 0.0,
-      InstrumentType.backingVocal: -7.0,
-      InstrumentType.guitar: -5.0,
-      InstrumentType.bass: -7.0,
-      InstrumentType.kick: -12.0,
-      InstrumentType.snare: -12.0,
-      InstrumentType.hihat: -17.0,
-      InstrumentType.overhead: -16.0,
-      InstrumentType.drums: -13.0,
-      InstrumentType.keys: -10.0,
-      InstrumentType.piano: -10.0,
-      InstrumentType.acoustic: -10.0,
-      InstrumentType.percussion: -12.0,
-      InstrumentType.sax: -8.0,
-      InstrumentType.brass: -8.0,
-      InstrumentType.strings: -10.0,
-      InstrumentType.unknown: -10.0,
-    },
-  ),
-  Genre.jazz: GenrePreset(
-    genre: Genre.jazz,
-    // Jazz: ride cymbal via overhead IS the rhythmic pulse — overhead stays
-    // more present than other genres (-12 vs -20+). Kick is barely audible
-    // (brushed or feathered). Sax/piano/acoustic co-lead with the vocal.
-    relativeDb: {
-      InstrumentType.leadVocal: 0.0,
-      InstrumentType.sax: -3.0,
-      InstrumentType.acoustic: -4.0,
-      InstrumentType.piano: -4.0,
-      InstrumentType.brass: -4.0,
-      InstrumentType.keys: -5.0,
-      InstrumentType.bass: -5.0,
-      InstrumentType.strings: -5.0,
-      InstrumentType.guitar: -6.0,
-      InstrumentType.backingVocal: -7.0,
-      InstrumentType.overhead: -12.0,
-      InstrumentType.hihat: -14.0,
-      InstrumentType.kick: -18.0,
-      InstrumentType.snare: -18.0,
-      InstrumentType.drums: -16.0,
-      InstrumentType.percussion: -12.0,
-      InstrumentType.unknown: -8.0,
-    },
-  ),
-  Genre.acoustic: GenrePreset(
-    genre: Genre.acoustic,
-    // Acoustic: voice / guitar / piano dominant, minimal or no drums.
-    // Drums nearly inaudible — just enough to feel the pulse.
-    relativeDb: {
-      InstrumentType.leadVocal: 0.0,
-      InstrumentType.backingVocal: -5.0,
-      InstrumentType.acoustic: -4.0,
-      InstrumentType.strings: -4.0,
-      InstrumentType.piano: -5.0,
-      InstrumentType.guitar: -5.0,
-      InstrumentType.keys: -6.0,
-      InstrumentType.bass: -8.0,
-      InstrumentType.sax: -6.0,
-      InstrumentType.brass: -7.0,
-      InstrumentType.kick: -18.0,
-      InstrumentType.snare: -20.0,
-      InstrumentType.overhead: -22.0,
-      InstrumentType.drums: -20.0,
-      InstrumentType.percussion: -17.0,
-      InstrumentType.hihat: -24.0,
-      InstrumentType.unknown: -8.0,
-    },
-  ),
+/// All presets, built from [kBaseProfile] + [kGenreDeltas].
+final Map<Genre, GenrePreset> kGenrePresets = {
+  for (final genre in Genre.values)
+    genre: GenrePreset(genre: genre, deltaDb: kGenreDeltas[genre] ?? const {}),
 };
