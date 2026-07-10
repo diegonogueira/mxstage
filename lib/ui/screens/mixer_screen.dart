@@ -5,6 +5,7 @@ import '../../osc/osc_codec.dart';
 import '../../state/genre_presets.dart';
 import '../../state/instrument_type.dart';
 import '../instrument_visuals.dart';
+import '../palette.dart';
 import '../widgets/bus_picker.dart';
 
 class MixerScreen extends StatefulWidget {
@@ -62,7 +63,7 @@ class _MixerScreenState extends State<MixerScreen> {
             .toList();
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0A0A0A),
+      backgroundColor: AppColors.canvas,
       appBar: _buildAppBar(),
       body: Column(
         children: [
@@ -89,7 +90,7 @@ class _MixerScreenState extends State<MixerScreen> {
 
   AppBar _buildAppBar() {
     return AppBar(
-      backgroundColor: const Color(0xFF0D0D0D),
+      backgroundColor: AppColors.panel,
       title: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -120,7 +121,7 @@ class _MixerScreenState extends State<MixerScreen> {
         IconButton(
           icon: Icon(
             _client.isMuted ? Icons.volume_off : Icons.volume_up,
-            color: _client.isMuted ? Colors.redAccent : Colors.white54,
+            color: _client.isMuted ? AppColors.red : Colors.white54,
           ),
           tooltip: _client.isMuted ? 'Restaurar volume' : 'Mute retorno',
           onPressed: _client.toggleMute,
@@ -151,8 +152,8 @@ class _AutoMixBar extends StatelessWidget {
 
     return Container(
       decoration: const BoxDecoration(
-        color: Color(0xFF141414),
-        border: Border(bottom: BorderSide(color: Color(0xFF222222))),
+        color: AppColors.panel,
+        border: Border(bottom: BorderSide(color: AppColors.border)),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Row(
@@ -160,21 +161,21 @@ class _AutoMixBar extends StatelessWidget {
           Icon(
             Icons.auto_fix_high,
             size: 16,
-            color: active ? const Color(0xFF2AAF8E) : Colors.white24,
+            color: active ? AppColors.green : Colors.white24,
           ),
           const SizedBox(width: 6),
           Text(
             'Auto-Mix',
             style: TextStyle(
               fontSize: 13,
-              color: active ? const Color(0xFF2AAF8E) : Colors.white38,
+              color: active ? AppColors.green : Colors.white38,
               fontWeight: FontWeight.w500,
             ),
           ),
           Switch(
             value: active,
             onChanged: (v) => v ? client.enableAutoMix() : client.disableAutoMix(),
-            activeThumbColor: const Color(0xFF2AAF8E),
+            activeThumbColor: AppColors.green,
           ),
           IconButton(
             icon: const Icon(Icons.help_outline, size: 18, color: Colors.white24),
@@ -193,7 +194,7 @@ class _AutoMixBar extends StatelessWidget {
   void _showChecklist(BuildContext context) {
     showModalBottomSheet<void>(
       context: context,
-      backgroundColor: const Color(0xFF141414),
+      backgroundColor: AppColors.panel,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -218,8 +219,8 @@ class _GenreDropdown extends StatelessWidget {
       decoration: BoxDecoration(
         border: Border.all(
           color: active
-              ? const Color(0xFF2AAF8E).withAlpha(120)
-              : const Color(0xFF2AAF8E).withAlpha(40),
+              ? AppColors.green.withAlpha(120)
+              : AppColors.green.withAlpha(40),
         ),
         borderRadius: BorderRadius.circular(20),
       ),
@@ -227,8 +228,8 @@ class _GenreDropdown extends StatelessWidget {
         child: DropdownButton<Genre>(
           value: client.genre,
           isDense: true,
-          icon: const Icon(Icons.arrow_drop_down, size: 16, color: Color(0xFF2AAF8E)),
-          dropdownColor: const Color(0xFF1A1A1A),
+          icon: const Icon(Icons.arrow_drop_down, size: 16, color: AppColors.green),
+          dropdownColor: AppColors.elevated,
           onChanged: (g) {
             if (g != null) client.setGenre(g);
           },
@@ -239,11 +240,11 @@ class _GenreDropdown extends StatelessWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.music_note, size: 13, color: Color(0xFF2AAF8E)),
+                      const Icon(Icons.music_note, size: 13, color: AppColors.green),
                       const SizedBox(width: 4),
                       Text(
                         g.label,
-                        style: const TextStyle(fontSize: 12, color: Color(0xFF2AAF8E)),
+                        style: const TextStyle(fontSize: 12, color: AppColors.green),
                       ),
                     ],
                   ),
@@ -290,10 +291,10 @@ class _GroupTabs extends StatelessWidget {
           selected: sel,
           onSelected: (_) => onTap(),
           showCheckmark: false,
-          backgroundColor: const Color(0xFF1A1A1A),
-          selectedColor: const Color(0xFF2AAF8E),
+          backgroundColor: AppColors.panel,
+          selectedColor: AppColors.blue,
           side: BorderSide(
-            color: sel ? Colors.transparent : const Color(0xFF262626),
+            color: sel ? Colors.transparent : AppColors.border,
           ),
           labelStyle: TextStyle(
             fontSize: 12,
@@ -309,8 +310,8 @@ class _GroupTabs extends StatelessWidget {
     return Container(
       height: 44,
       decoration: const BoxDecoration(
-        color: Color(0xFF0D0D0D),
-        border: Border(bottom: BorderSide(color: Color(0xFF1A1A1A))),
+        color: AppColors.canvas,
+        border: Border(bottom: BorderSide(color: AppColors.borderMuted)),
       ),
       child: ListView(
         scrollDirection: Axis.horizontal,
@@ -350,7 +351,7 @@ class _PrereqSheetState extends State<_PrereqSheet> {
           children: [
             Row(
               children: [
-                const Icon(Icons.checklist_rtl, color: Color(0xFF2AAF8E), size: 20),
+                const Icon(Icons.checklist_rtl, color: AppColors.green, size: 20),
                 const SizedBox(width: 8),
                 const Text(
                   'Antes de ligar o Auto-Mix',
@@ -358,7 +359,7 @@ class _PrereqSheetState extends State<_PrereqSheet> {
                 ),
                 const Spacer(),
                 if (allOk)
-                  const Icon(Icons.check_circle, color: Color(0xFF2AAF8E), size: 20),
+                  const Icon(Icons.check_circle, color: AppColors.green, size: 20),
               ],
             ),
             const SizedBox(height: 4),
@@ -377,7 +378,7 @@ class _PrereqSheetState extends State<_PrereqSheet> {
               Center(
                 child: Text(
                   'Tudo certo — pode ligar o Auto-Mix.',
-                  style: TextStyle(fontSize: 13, color: const Color(0xFF2AAF8E).withAlpha(200)),
+                  style: TextStyle(fontSize: 13, color: AppColors.green.withAlpha(200)),
                 ),
               ),
           ],
@@ -406,7 +407,7 @@ class _PrereqTile extends StatelessWidget {
           children: [
             Icon(
               checked ? Icons.check_circle : Icons.radio_button_unchecked,
-              color: checked ? const Color(0xFF2AAF8E) : Colors.white24,
+              color: checked ? AppColors.green : Colors.white24,
               size: 20,
             ),
             const SizedBox(width: 12),
@@ -507,18 +508,15 @@ class _FaderBoard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final stripW = isLandscape ? 72.0 : 80.0;
+    final stripW = isLandscape ? 78.0 : 86.0;
 
     return ScrollConfiguration(
       behavior: const _NoGlowScroll(),
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 10),
         itemCount: channels.length,
-        separatorBuilder: (context, index) => const SizedBox(
-          width: 1,
-          child: VerticalDivider(color: Color(0xFF1E1E1E), width: 1),
-        ),
+        separatorBuilder: (context, index) => const SizedBox(width: 8),
         itemBuilder: (context, i) {
           final ch = channels[i];
           final chIdx = ch.ch - 1;
@@ -565,41 +563,49 @@ class _ChannelStrip extends StatelessWidget {
     final idColor = muted
         ? Colors.white12
         : known
-            ? const Color(0xFF2AAF8E)
-            : Colors.amberAccent;
+            ? AppColors.blue
+            : AppColors.amber;
 
     return SizedBox(
       width: width,
-      child: Column(
-        children: [
-          // Header: channel number + mixer name + what the app identified
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6),
-            child: Column(
-              children: [
-                Text(
-                  channel.ch.toString().padLeft(2, '0'),
-                  style: const TextStyle(fontSize: 9, color: Colors.white24, letterSpacing: 1),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  channel.name,
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: muted ? Colors.white12 : Colors.white70,
-                    height: 1.2,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 8),
+        decoration: BoxDecoration(
+          color: AppColors.panel,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Column(
+          children: [
+            // Header: channel number + mixer name + what the app identified
+            Padding(
+              padding: const EdgeInsets.fromLTRB(4, 8, 4, 6),
+              child: Column(
+                children: [
+                  Text(
+                    channel.ch.toString().padLeft(2, '0'),
+                    style: const TextStyle(fontSize: 10, color: Colors.white24, letterSpacing: 1),
                   ),
-                ),
-                const SizedBox(height: 3),
+                  const SizedBox(height: 3),
+                  Text(
+                    channel.name,
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: muted ? Colors.white12 : Colors.white,
+                      height: 1.2,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
                 // Identified instrument — amber flags an unrecognised channel
                 // whose auto-mix target is falling back to the generic default.
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Icon(instrumentIcon(instrument), size: 10, color: idColor),
+                    Icon(instrumentIcon(instrument), size: 11, color: idColor),
                     const SizedBox(width: 3),
                     Flexible(
                       child: Text(
@@ -607,7 +613,7 @@ class _ChannelStrip extends StatelessWidget {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize: 9,
+                          fontSize: 10,
                           height: 1.1,
                           color: idColor,
                           fontWeight: FontWeight.w500,
@@ -635,9 +641,9 @@ class _ChannelStrip extends StatelessWidget {
                 // VU meter bar (thin strip on the right)
                 _VuMeterBar(
                   db: muted ? -90 : meterDb,
-                  width: 6,
+                  width: 7,
                 ),
-                const SizedBox(width: 2),
+                const SizedBox(width: 4),
               ],
             ),
           ),
@@ -650,32 +656,34 @@ class _ChannelStrip extends StatelessWidget {
                 Text(
                   dbLabel,
                   style: TextStyle(
-                    fontSize: 11,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
                     color: muted ? Colors.white12 : _dbColor(db),
                     fontFeatures: const [FontFeature.tabularFigures()],
                   ),
                 ),
                 const SizedBox(height: 4),
                 Container(
-                  width: 5,
-                  height: 5,
+                  width: 6,
+                  height: 6,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: active ? const Color(0xFF2AAF8E) : const Color(0xFF222222),
+                    color: active ? AppColors.blue : AppColors.border,
                   ),
                 ),
               ],
             ),
           ),
-        ],
+          ],
+        ),
       ),
     );
   }
 
   Color _dbColor(double db) {
-    if (db > 0) return Colors.redAccent;
-    if (db > -6) return Colors.orangeAccent;
-    return Colors.white54;
+    if (db > 0) return AppColors.red;
+    if (db > -6) return AppColors.amber;
+    return AppColors.blue;
   }
 }
 
@@ -694,13 +702,13 @@ class _VerticalFader extends StatelessWidget {
       quarterTurns: 3,
       child: SliderTheme(
         data: SliderTheme.of(context).copyWith(
-          activeTrackColor: muted ? const Color(0xFF222222) : _trackColor(value),
-          inactiveTrackColor: const Color(0xFF1A1A1A),
-          thumbColor: muted ? const Color(0xFF333333) : Colors.white,
-          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 10),
-          trackHeight: 3,
-          overlayShape: const RoundSliderOverlayShape(overlayRadius: 20),
-          overlayColor: Colors.white10,
+          activeTrackColor: muted ? AppColors.borderMuted : _trackColor(value),
+          inactiveTrackColor: AppColors.track,
+          thumbColor: muted ? AppColors.border : Colors.white,
+          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 11),
+          trackHeight: 6,
+          overlayShape: const RoundSliderOverlayShape(overlayRadius: 18),
+          overlayColor: AppColors.blue.withAlpha(38),
         ),
         child: Slider(value: value, min: 0, max: 1, onChanged: onChanged),
       ),
@@ -708,9 +716,9 @@ class _VerticalFader extends StatelessWidget {
   }
 
   Color _trackColor(double v) {
-    if (v > 0.88) return Colors.redAccent;
-    if (v > 0.75) return Colors.orangeAccent;
-    return const Color(0xFF2AAF8E);
+    if (v > 0.88) return AppColors.red;
+    if (v > 0.75) return AppColors.amber;
+    return AppColors.blue;
   }
 }
 
@@ -735,7 +743,7 @@ class _VuMeterBar extends StatelessWidget {
         borderRadius: BorderRadius.circular(2),
         child: Column(
           children: [
-            Expanded(flex: emptyFlex, child: const ColoredBox(color: Color(0xFF111111))),
+            Expanded(flex: emptyFlex, child: const ColoredBox(color: AppColors.borderMuted)),
             Expanded(flex: filledFlex, child: ColoredBox(color: _barColor(db))),
           ],
         ),
@@ -744,10 +752,10 @@ class _VuMeterBar extends StatelessWidget {
   }
 
   Color _barColor(double db) {
-    if (db > 0) return Colors.redAccent;
-    if (db > -6) return Colors.orangeAccent;
-    if (db > -18) return const Color(0xFF2AAF8E);
-    return const Color(0xFF1A5A4A);
+    if (db > 0) return AppColors.red;
+    if (db > -6) return AppColors.amber;
+    if (db > -18) return AppColors.green;
+    return const Color(0xFF1F5A34);
   }
 }
 

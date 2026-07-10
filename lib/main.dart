@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'; // ignore: unused_import
 
+import 'ui/palette.dart';
 import 'ui/screens/connect_screen.dart';
 
 Future<void> main() async {
@@ -26,26 +27,29 @@ class MxStageApp extends StatelessWidget {
       themeMode: ThemeMode.dark,
       darkTheme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF2AAF8E),
+          seedColor: AppColors.blue,
           brightness: Brightness.dark,
+          surface: AppColors.canvas,
         ),
         useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xFF0D0D0D),
-        cardColor: const Color(0xFF1A1A1A),
+        scaffoldBackgroundColor: AppColors.canvas,
+        cardColor: AppColors.panel,
+        cardTheme: const CardThemeData(color: AppColors.panel, elevation: 0),
+        dividerColor: AppColors.border,
         appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFF111111),
-          foregroundColor: Colors.white,
+          backgroundColor: AppColors.panel,
+          foregroundColor: AppColors.textPrimary,
           elevation: 0,
         ),
         sliderTheme: const SliderThemeData(
-          activeTrackColor: Color(0xFF2AAF8E),
-          inactiveTrackColor: Color(0xFF2A2A2A),
+          activeTrackColor: AppColors.blue,
+          inactiveTrackColor: AppColors.track,
           thumbColor: Colors.white,
-          trackHeight: 4,
+          trackHeight: 6,
         ),
         inputDecorationTheme: const InputDecorationTheme(
           filled: true,
-          fillColor: Color(0xFF1A1A1A),
+          fillColor: AppColors.panel,
           border: OutlineInputBorder(),
         ),
       ),

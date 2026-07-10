@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../mixer/mixer_client.dart';
+import '../palette.dart';
 
 /// A tappable list of the mixer's return buses, labelled by name when the
 /// mixer provides one. Shared by the connect flow and the in-mix switcher.
@@ -34,7 +35,7 @@ class BusPickerList extends StatelessWidget {
               leading: Text(
                 bus.toString().padLeft(2, '0'),
                 style: TextStyle(
-                  color: selected ? const Color(0xFF2AAF8E) : Colors.white38,
+                  color: selected ? AppColors.blue : Colors.white38,
                   fontWeight: FontWeight.bold,
                 ),
               ),
@@ -47,7 +48,7 @@ class BusPickerList extends StatelessWidget {
               ),
               trailing: selected
                   ? const Icon(Icons.check_circle,
-                      color: Color(0xFF2AAF8E), size: 20)
+                      color: AppColors.blue, size: 20)
                   : null,
               onTap: () => onPick(bus),
             );
@@ -66,7 +67,7 @@ Future<void> showBusPicker(
 }) {
   return showModalBottomSheet<void>(
     context: context,
-    backgroundColor: const Color(0xFF141414),
+    backgroundColor: AppColors.panel,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
     ),
@@ -79,7 +80,7 @@ Future<void> showBusPicker(
             padding: EdgeInsets.fromLTRB(20, 16, 20, 4),
             child: Row(
               children: [
-                Icon(Icons.headphones, color: Color(0xFF2AAF8E), size: 20),
+                Icon(Icons.headphones, color: AppColors.blue, size: 20),
                 SizedBox(width: 8),
                 Text(
                   'Meu bus de retorno',

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../mixer/mixer_client.dart';
+import '../palette.dart';
 import '../widgets/bus_picker.dart';
 import 'mixer_screen.dart';
 
@@ -158,7 +159,7 @@ class _ConnectScreenState extends State<ConnectScreen>
                   (m) => Card(
                     margin: const EdgeInsets.only(bottom: 8),
                     child: ListTile(
-                      leading: const Icon(Icons.router, color: Color(0xFF2AAF8E)),
+                      leading: const Icon(Icons.router, color: AppColors.blue),
                       title: Text(m.name),
                       subtitle: Text('${m.model}  •  ${m.ip}  •  fw ${m.firmware}'),
                       trailing: const Icon(Icons.arrow_forward_ios, size: 16),
