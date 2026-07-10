@@ -196,15 +196,26 @@ class _MixerScreenState extends State<MixerScreen> {
 
     return Scaffold(
       backgroundColor: AppColors.canvas,
-      appBar: _buildAppBar(),
+      appBar: _buildAppBar(isLandscape),
       body: Column(
         children: [
-          _AutoMixBar(client: _client),
-          _GroupTabs(
-            present: present,
-            selected: _group,
-            onSelected: (g) => setState(() => _group = g),
-          ),
+          // Landscape is short on height: fold the Auto-Mix row and the filter
+          // tabs into one bar so the extra vertical space goes to fader throw.
+          if (isLandscape)
+            _ControlBar(
+              client: _client,
+              present: present,
+              selected: _group,
+              onSelected: (g) => setState(() => _group = g),
+            )
+          else ...[
+            _AutoMixBar(client: _client),
+            _GroupTabs(
+              present: present,
+              selected: _group,
+              onSelected: (g) => setState(() => _group = g),
+            ),
+          ],
           Expanded(
             child: _FaderBoard(
               channels: visible,
@@ -222,9 +233,10 @@ class _MixerScreenState extends State<MixerScreen> {
     );
   }
 
-  AppBar _buildAppBar() {
+  AppBar _buildAppBar(bool isLandscape) {
     return AppBar(
       backgroundColor: AppColors.panel,
+      toolbarHeight: isLandscape ? 50 : null,
       title: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -402,37 +414,6 @@ class _GroupTabs extends StatelessWidget {
     // Only one family present — nothing meaningful to filter by.
     if (groups.length < 2) return const SizedBox.shrink();
 
-    Widget chip(String label, IconData icon, bool sel, VoidCallback onTap) {
-      return Padding(
-        padding: const EdgeInsets.only(right: 6),
-        child: ChoiceChip(
-          label: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 13, color: sel ? Colors.black : Colors.white54),
-              const SizedBox(width: 4),
-              Text(label),
-            ],
-          ),
-          selected: sel,
-          onSelected: (_) => onTap(),
-          showCheckmark: false,
-          backgroundColor: AppColors.panel,
-          selectedColor: AppColors.blue,
-          side: BorderSide(
-            color: sel ? Colors.transparent : AppColors.border,
-          ),
-          labelStyle: TextStyle(
-            fontSize: 12,
-            color: sel ? Colors.black : Colors.white70,
-            fontWeight: FontWeight.w500,
-          ),
-          visualDensity: VisualDensity.compact,
-          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        ),
-      );
-    }
-
     return Container(
       height: 44,
       decoration: const BoxDecoration(
@@ -443,9 +424,118 @@ class _GroupTabs extends StatelessWidget {
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         children: [
-          chip('Todos', Icons.apps, selected == null, () => onSelected(null)),
+          _groupChip('Todos', Icons.apps, selected == null, () => onSelected(null)),
           for (final g in groups)
-            chip(g.label, g.icon, selected == g, () => onSelected(g)),
+            _groupChip(g.label, g.icon, selected == g, () => onSelected(g)),
+        ],
+      ),
+    );
+  }
+}
+
+// A single filter chip, shared by the portrait tab bar and the landscape
+// combined control bar.
+Widget _groupChip(String label, IconData icon, bool sel, VoidCallback onTap) {
+  return Padding(
+    padding: const EdgeInsets.only(right: 6),
+    child: ChoiceChip(
+      label: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 13, color: sel ? Colors.black : Colors.white54),
+          const SizedBox(width: 4),
+          Text(label),
+        ],
+      ),
+      selected: sel,
+      onSelected: (_) => onTap(),
+      showCheckmark: false,
+      backgroundColor: AppColors.panel,
+      selectedColor: AppColors.blue,
+      side: BorderSide(color: sel ? Colors.transparent : AppColors.border),
+      labelStyle: TextStyle(
+        fontSize: 12,
+        color: sel ? Colors.black : Colors.white70,
+        fontWeight: FontWeight.w500,
+      ),
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    ),
+  );
+}
+
+// ── Landscape combined control bar ────────────────────────────────────────────
+// Auto-Mix toggle + genre + filter tabs in a single row. Portrait keeps the two
+// separate bars (_AutoMixBar + _GroupTabs); landscape is too short for both.
+
+class _ControlBar extends StatelessWidget {
+  final MixerClient client;
+  final Set<InstrumentGroup> present;
+  final InstrumentGroup? selected;
+  final ValueChanged<InstrumentGroup?> onSelected;
+
+  const _ControlBar({
+    required this.client,
+    required this.present,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final active = client.autoMixActive;
+    final groups = kInstrumentGroupOrder.where(present.contains).toList();
+    final showTabs = groups.length >= 2;
+
+    return Container(
+      height: 46,
+      decoration: const BoxDecoration(
+        color: AppColors.panel,
+        border: Border(bottom: BorderSide(color: AppColors.border)),
+      ),
+      padding: const EdgeInsets.only(left: 12, right: 8),
+      child: Row(
+        children: [
+          Icon(
+            Icons.auto_fix_high,
+            size: 16,
+            color: active ? AppColors.green : Colors.white24,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            'Auto-Mix',
+            style: TextStyle(
+              fontSize: 13,
+              color: active ? AppColors.green : Colors.white38,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          Switch(
+            value: active,
+            onChanged: (v) => v ? client.enableAutoMix() : client.disableAutoMix(),
+            activeThumbColor: AppColors.green,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          const SizedBox(width: 4),
+          _GenreDropdown(client: client),
+          if (showTabs) ...[
+            const SizedBox(width: 10),
+            Container(width: 1, height: 22, color: AppColors.border),
+            const SizedBox(width: 8),
+            Expanded(
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(vertical: 7),
+                children: [
+                  _groupChip(
+                      'Todos', Icons.apps, selected == null, () => onSelected(null)),
+                  for (final g in groups)
+                    _groupChip(g.label, g.icon, selected == g, () => onSelected(g)),
+                ],
+              ),
+            ),
+          ] else
+            const Spacer(),
         ],
       ),
     );
@@ -496,6 +586,7 @@ class _FaderBoard extends StatelessWidget {
                 : InstrumentType.unknown,
             overridden: isOverridden(ch.ch),
             width: stripW,
+            compact: isLandscape,
             muted: muted,
             meterDb: meterDb(chIdx),
             onLevelChanged: (v) => onLevelChanged(ch.ch, v),
@@ -512,6 +603,7 @@ class _ChannelStrip extends StatelessWidget {
   final InstrumentType instrument;
   final bool overridden;
   final double width;
+  final bool compact;
   final bool muted;
   final double meterDb;
   final ValueChanged<double> onLevelChanged;
@@ -522,6 +614,7 @@ class _ChannelStrip extends StatelessWidget {
     required this.instrument,
     required this.overridden,
     required this.width,
+    required this.compact,
     required this.muted,
     required this.meterDb,
     required this.onLevelChanged,
@@ -544,7 +637,7 @@ class _ChannelStrip extends StatelessWidget {
     return SizedBox(
       width: width,
       child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 8),
+        margin: EdgeInsets.symmetric(vertical: compact ? 4 : 8),
         decoration: BoxDecoration(
           color: AppColors.panel,
           borderRadius: BorderRadius.circular(10),
@@ -558,7 +651,7 @@ class _ChannelStrip extends StatelessWidget {
               behavior: HitTestBehavior.opaque,
               onLongPress: onEditInstrument,
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(4, 8, 4, 6),
+                padding: EdgeInsets.fromLTRB(4, compact ? 5 : 8, 4, compact ? 3 : 6),
                 child: Column(
                   children: [
                     Text(
@@ -636,7 +729,7 @@ class _ChannelStrip extends StatelessWidget {
 
           // Footer: dB label + activity dot
           Padding(
-            padding: const EdgeInsets.only(bottom: 8, top: 2),
+            padding: EdgeInsets.only(bottom: compact ? 4 : 8, top: 2),
             child: Column(
               children: [
                 Text(
