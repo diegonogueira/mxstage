@@ -12,7 +12,8 @@ class ConnectScreen extends StatefulWidget {
   State<ConnectScreen> createState() => _ConnectScreenState();
 }
 
-class _ConnectScreenState extends State<ConnectScreen> {
+class _ConnectScreenState extends State<ConnectScreen>
+    with WidgetsBindingObserver {
   late final MixerClient _client;
   final _ipController = TextEditingController();
   bool _connecting = false;
@@ -22,13 +23,25 @@ class _ConnectScreenState extends State<ConnectScreen> {
     super.initState();
     _client = MixerClient();
     _client.addListener(_onClientChange);
+    WidgetsBinding.instance.addObserver(this);
     _client.startDiscovery();
   }
 
   void _onClientChange() => setState(() {});
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Coming back to the foreground: if the OS suspended us (background
+    // execution not granted), the meter subscription may have expired, so
+    // restart it immediately rather than waiting for the next renew tick.
+    if (state == AppLifecycleState.resumed) {
+      _client.resyncAfterResume();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _client.removeListener(_onClientChange);
     _client.dispose();
     _ipController.dispose();

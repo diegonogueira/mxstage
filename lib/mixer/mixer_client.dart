@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../engine/auto_mix_engine.dart';
 import '../osc/osc_codec.dart';
 import '../osc/x32_protocol.dart';
+import '../platform/background_keepalive.dart';
 import '../state/channel_mapper.dart';
 import '../state/genre_presets.dart';
 import '../state/instrument_type.dart';
@@ -283,9 +284,16 @@ class MixerClient extends ChangeNotifier {
 
     _connected = true;
     notifyListeners();
+
+    // Keep the process alive in the background so the meter subscription and
+    // the auto-mix loop don't freeze when the phone locks or the musician
+    // opens a chord-sheet app. Fire-and-forget: the first call may show a
+    // battery-optimization permission dialog, and connect must not block on it.
+    unawaited(BackgroundKeepAlive.enable());
   }
 
   Future<void> disconnect() async {
+    unawaited(BackgroundKeepAlive.disable());
     disableAutoMix();
     _baselineLevels.clear();
     _muted = false;
@@ -300,6 +308,17 @@ class MixerClient extends ChangeNotifier {
     _mixerIp = null;
     _mixerName = null;
     notifyListeners();
+  }
+
+  /// Re-subscribe to meters after the app returns to the foreground.
+  ///
+  /// Safety net for when background execution wasn't actually granted (e.g. the
+  /// user denied battery-optimization) and the OS suspended the process: the
+  /// meter subscription expires after ~10s, so on resume we restart it
+  /// immediately instead of waiting up to a full renew interval for the feed.
+  void resyncAfterResume() {
+    if (!_connected) return;
+    _subscribeMeter();
   }
 
   // ── Channel sends ──────────────────────────────────────────────────────────
