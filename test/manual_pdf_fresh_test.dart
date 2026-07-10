@@ -7,7 +7,7 @@
 
 import 'dart:io';
 
-import 'package:mxstage/state/manual_content.dart';
+import 'package:mxwise/state/manual_content.dart';
 import 'package:test/test.dart';
 
 void main() {

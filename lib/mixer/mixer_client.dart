@@ -65,7 +65,7 @@ class MixerClient extends ChangeNotifier {
 
   final _meters = MeterStream();
   final _engine = AutoMixEngine();
-  Genre _genre = Genre.gospel;
+  Genre _genre = Genre.general;
 
   // Baseline send levels read from the mixer at connect time.
   // Used as the engine's clamp reference to prevent drift each time

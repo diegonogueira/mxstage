@@ -1,9 +1,9 @@
 // Integration test: MixerClient writes correct /ch/NN/mix/MM/level OSC messages.
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mxstage/mixer/mixer_client.dart';
-import 'package:mxstage/osc/osc_codec.dart';
-import 'package:mxstage/osc/x32_protocol.dart';
+import 'package:mxwise/mixer/mixer_client.dart';
+import 'package:mxwise/osc/osc_codec.dart';
+import 'package:mxwise/osc/x32_protocol.dart';
 
 void main() {
   late RawDatagramSocket fakeX32;

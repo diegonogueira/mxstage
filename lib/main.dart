@@ -13,16 +13,16 @@ Future<void> main() async {
     DeviceOrientation.landscapeLeft,
     DeviceOrientation.landscapeRight,
   ]);
-  runApp(const MxStageApp());
+  runApp(const MxWiseApp());
 }
 
-class MxStageApp extends StatelessWidget {
-  const MxStageApp({super.key});
+class MxWiseApp extends StatelessWidget {
+  const MxWiseApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'mxstage',
+      title: 'MXWise',
       debugShowCheckedModeBanner: false,
       themeMode: ThemeMode.dark,
       darkTheme: ThemeData(

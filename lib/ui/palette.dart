@@ -29,4 +29,7 @@ abstract final class AppColors {
   static const green = Color(0xFF3FB950);
   static const amber = Color(0xFFD29922);
   static const red = Color(0xFFF85149);
+
+  // Marca — ciano do wordmark "Wise" (MXWise), mais elétrico que o [blue].
+  static const cyan = Color(0xFF2BC4F2);
 }

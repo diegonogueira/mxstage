@@ -1,4 +1,4 @@
-name: mxstage
+name: mxwise
 description: "Auto-mix de retorno para Behringer X32 — mantém o balanço do monitor pessoal."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.

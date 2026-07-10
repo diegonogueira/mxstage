@@ -23,7 +23,7 @@ class BackgroundKeepAlive {
       // Not marked const so we don't depend on the plugin's constructors being
       // const across versions.
       final config = FlutterBackgroundAndroidConfig(
-        notificationTitle: 'mxstage conectado',
+        notificationTitle: 'MXWise conectado',
         notificationText: 'Mantendo o balanço do seu retorno em segundo plano.',
         notificationImportance: AndroidNotificationImportance.normal,
         notificationIcon:

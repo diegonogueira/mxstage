@@ -1,4 +1,4 @@
-# mxstage — Auto-Mix de Retorno (Behringer X32)
+# MXWise — Auto-Mix de Retorno (Behringer X32)
 
 App Flutter/Dart que mantém o balanço do monitor pessoal de um músico na X32,
 corrigindo drift de nível com um loop de Auto-Mix baseado em referência capturada.

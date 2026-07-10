@@ -19,7 +19,7 @@ import 'dart:io';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
-import 'package:mxstage/state/manual_content.dart';
+import 'package:mxwise/state/manual_content.dart';
 
 // Paleta do PDF — variantes escuras dos acentos do app, legíveis sobre branco.
 final _title = PdfColor.fromHex('1F2328'); // quase preto
@@ -62,7 +62,7 @@ Future<void> main() async {
 
   final doc = pw.Document(
     title: manualTitle,
-    author: 'MXWise · mxstage',
+    author: 'MXWise',
     // Sem creator/producer variável → saída estável para o teste anti-drift.
   );
 

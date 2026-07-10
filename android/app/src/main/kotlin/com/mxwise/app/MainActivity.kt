@@ -1,4 +1,4 @@
-package com.mxstage.mxstage
+package com.mxwise.app
 
 import io.flutter.embedding.android.FlutterActivity
 

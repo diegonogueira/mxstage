@@ -5,10 +5,10 @@
 // tracks the loudest channel, so the whole mix rides the band's energy while a
 // single-channel surge is tamed.
 import 'package:test/test.dart';
-import 'package:mxstage/engine/auto_mix_engine.dart';
-import 'package:mxstage/osc/osc_codec.dart';
-import 'package:mxstage/state/instrument_type.dart';
-import 'package:mxstage/state/genre_presets.dart';
+import 'package:mxwise/engine/auto_mix_engine.dart';
+import 'package:mxwise/osc/osc_codec.dart';
+import 'package:mxwise/state/instrument_type.dart';
+import 'package:mxwise/state/genre_presets.dart';
 
 // 32 channels, all silent by default.
 List<double> _meters({Map<int, double> active = const {}}) {

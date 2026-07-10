@@ -1,4 +1,4 @@
-# mxstage
+# MXWise
 
 Auto-mix de retorno para Behringer X32. Mantém o balanço do monitor pessoal
 de um músico no palco, corrigindo drift de nível automaticamente sem operador.

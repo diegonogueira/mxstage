@@ -36,11 +36,32 @@ class _MixerScreenState extends State<MixerScreen> {
     super.initState();
     _client.addListener(_onClientChange);
     _loadLiveBus();
+    _loadGenre();
   }
 
   Future<void> _loadLiveBus() async {
     final bus = await AppSettings.liveBus();
     if (mounted) setState(() => _liveBus = bus);
+  }
+
+  // Restaura o preset de gênero salvo para esta mesa (por mixerName).
+  Future<void> _loadGenre() async {
+    final mixer = _client.mixerName;
+    if (mixer == null || mixer.isEmpty) return;
+    final name = await AppSettings.genreName(mixer);
+    if (!mounted) return;
+    Genre? g;
+    if (name != null) {
+      try {
+        g = Genre.values.byName(name);
+      } catch (_) {
+        g = null;
+      }
+    }
+    // Sem preset salvo para esta mesa → padrão Geral (não vaza o gênero de
+    // outra mesa que ficou no cliente em memória).
+    g ??= Genre.general;
+    if (g != _client.genre) _client.setGenre(g);
   }
 
   @override
@@ -168,24 +189,8 @@ class _MixerScreenState extends State<MixerScreen> {
       ),
       actions: [
         Padding(
-          padding: const EdgeInsets.only(right: 4),
+          padding: const EdgeInsets.only(right: 8),
           child: Center(child: ModeBadge(mode: widget.mode)),
-        ),
-        IconButton(
-          icon: Icon(
-            _client.isMuted ? Icons.volume_off : Icons.volume_up,
-            color: _client.isMuted ? AppColors.red : Colors.white54,
-          ),
-          tooltip: _client.isMuted ? 'Restaurar volume' : 'Mute retorno',
-          onPressed: _client.toggleMute,
-        ),
-        IconButton(
-          icon: const Icon(Icons.link_off, color: Colors.white38),
-          tooltip: 'Desconectar',
-          onPressed: () async {
-            await _client.disconnect();
-            if (mounted) Navigator.of(context).pop();
-          },
         ),
       ],
     );
@@ -266,7 +271,12 @@ class _GenreDropdown extends StatelessWidget {
           icon: const Icon(Icons.arrow_drop_down, size: 16, color: AppColors.green),
           dropdownColor: AppColors.elevated,
           onChanged: (g) {
-            if (g != null) client.setGenre(g);
+            if (g == null) return;
+            client.setGenre(g);
+            final mixer = client.mixerName;
+            if (mixer != null && mixer.isNotEmpty) {
+              AppSettings.setGenreName(mixer, g.name);
+            }
           },
           items: Genre.values
               .map(

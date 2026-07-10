@@ -2,9 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../mixer/mixer_client.dart';
+import '../../osc/x32_protocol.dart';
 import '../../state/app_mode.dart';
 import '../../state/app_settings.dart';
+import '../../state/genre_presets.dart';
 import '../palette.dart';
+import '../widgets/brand.dart';
 import '../widgets/bus_picker.dart';
 import '../widgets/live_entry.dart';
 import 'mixer_screen.dart';
@@ -23,6 +26,8 @@ class _ConnectScreenState extends State<ConnectScreen>
   final _ipController = TextEditingController();
   bool _connecting = false;
   int? _liveBus;
+  // Guarda para reabrir o último bus do Stage só uma vez por conexão.
+  bool _autoOpened = false;
 
   @override
   void initState() {
@@ -34,7 +39,66 @@ class _ConnectScreenState extends State<ConnectScreen>
     _loadLiveBus();
   }
 
-  void _onClientChange() => setState(() {});
+  void _onClientChange() {
+    // Nova conexão reabilita o auto-open; desconectar reseta.
+    if (!_client.isConnected) _autoOpened = false;
+    setState(() {});
+    _maybeAutoOpenLastBus();
+  }
+
+  // Ao conectar, se esta mesa tem um bus de retorno do Stage lembrado, pula o
+  // seletor e abre direto nele (o back volta ao seletor). Só uma vez por
+  // conexão; nunca abre o bus da transmissão.
+  Future<void> _maybeAutoOpenLastBus() async {
+    if (_autoOpened || !_client.isConnected) return;
+    final mixer = _client.mixerName;
+    if (mixer == null || mixer.isEmpty) return; // espera o /xinfo chegar
+    _autoOpened = true;
+    final bus = await AppSettings.stageBus(mixer);
+    if (bus == null || bus < 1 || bus > kMixBusCount || bus == _liveBus) return;
+    if (!mounted || !_client.isConnected) return;
+    await _openMixer(bus);
+  }
+
+  // Zera tudo que o app lembra (bus do Stage por mesa, gênero por mesa e o bus
+  // da Live). Pede confirmação; não altera nada na mesa.
+  Future<void> _confirmClearSettings() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.panel,
+        title: const Text('Zerar configurações salvas?'),
+        content: const Text(
+          'Apaga o bus de retorno lembrado, o gênero por mesa e o bus da '
+          'transmissão (Live). Não altera nada na mesa.',
+          style: TextStyle(color: AppColors.textSecondary, height: 1.35),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Zerar'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await AppSettings.clearAll();
+    if (!mounted) return;
+    // Apagar a preferência não basta: o cliente ainda guarda o gênero em
+    // memória. Volta o preset ao padrão de fábrica (Geral) aqui e agora.
+    _client.setGenre(Genre.general);
+    setState(() {
+      _liveBus = null;
+      _autoOpened = true; // não reabre um bus lembrado que acabou de ser apagado
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Configurações salvas apagadas.')),
+    );
+  }
 
   // Which bus is designated as the broadcast (Live) bus. In Stage mode it is
   // hidden from the bus picker so a musician can't grab the transmission mix.
@@ -91,6 +155,13 @@ class _ConnectScreenState extends State<ConnectScreen>
 
   Future<void> _openMixer(int bus, {AppMode mode = AppMode.stage}) async {
     if (bus != _client.busIndex) await _client.setBus(bus);
+    // Lembra o bus do Stage por mesa para reabrir nele na próxima conexão.
+    if (mode == AppMode.stage) {
+      final mixer = _client.mixerName;
+      if (mixer != null && mixer.isNotEmpty) {
+        await AppSettings.setStageBus(mixer, bus);
+      }
+    }
     if (!mounted) return;
     await Navigator.of(context).push(
       MaterialPageRoute(
@@ -141,7 +212,6 @@ class _ConnectScreenState extends State<ConnectScreen>
   Widget _buildDiscovery() {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('mxstage'),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -155,6 +225,11 @@ class _ConnectScreenState extends State<ConnectScreen>
           ListView(
             padding: const EdgeInsets.all(16),
             children: [
+              const Padding(
+                padding: EdgeInsets.only(top: 8, bottom: 22),
+                child: Center(child: BrandHero()),
+              ),
+
               // Auto-discovered mixers
               Text(
                 'Mesas encontradas na rede',
@@ -257,6 +332,19 @@ class _ConnectScreenState extends State<ConnectScreen>
               _SetupGuideButton(
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(builder: (_) => const MixerSetupScreen()),
+                ),
+              ),
+
+              const SizedBox(height: 20),
+              Center(
+                child: TextButton.icon(
+                  onPressed: _confirmClearSettings,
+                  icon: const Icon(Icons.settings_backup_restore,
+                      size: 18, color: AppColors.textMuted),
+                  label: const Text(
+                    'Zerar configurações salvas',
+                    style: TextStyle(color: AppColors.textMuted),
+                  ),
                 ),
               ),
             ],
