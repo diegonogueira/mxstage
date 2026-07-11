@@ -83,6 +83,12 @@ final _rampTargets = List<double?>.filled(48, null);
 // display in the web UI. null = the app never wrote a send for this channel.
 final _lastSendPerCh = List<double?>.filled(32, null);
 
+// Channels that carry real audio for the currently selected demo song (--web).
+// Empty = no song loaded yet (all channels behave as before). Channels outside
+// this set are held silent so the app never manages "phantom" channels that
+// have no sound (which would skew the reference and the balance).
+final _activeChannels = <int>{};
+
 // Connected web-control clients (--web mode).
 final _webClients = <WebSocket>[];
 
@@ -277,8 +283,9 @@ void _handleMessage(
         final key = '${ch}_$bus';
 
         if (msg.args.isEmpty) {
-          // GET — return current tracked level (default 0.75)
-          final level = _sendLevels[key] ?? 0.75;
+          // GET — return current tracked level. Default −10 dB (0.5) rather than
+          // unity so Auto-Mix has room to BOOST quiet channels, not only duck.
+          final level = _sendLevels[key] ?? 0.5;
           _send(socket, src, srcPort, encodeOsc(msg.address, ',f', [level]));
         } else {
           // SET — update and log
@@ -338,11 +345,14 @@ void _updateLevels() {
   }
 
   if (!_autoSimEnabled) {
-    // Only add tiny noise to non-zero channels for realism
-    for (var i = 0; i < 32; i++) {
-      if (_levels[i] > 0.01 && _rampTargets[i] == null) {
-        _levels[i] += (_rng.nextDouble() - 0.5) * 0.005;
-        _levels[i] = _levels[i].clamp(0.0, 1.0);
+    // Once a demo song drives real per-stem RMS meters, don't add synthetic
+    // jitter on top. Before any song loads, keep the light noise for realism.
+    if (_activeChannels.isEmpty) {
+      for (var i = 0; i < 32; i++) {
+        if (_levels[i] > 0.01 && _rampTargets[i] == null) {
+          _levels[i] += (_rng.nextDouble() - 0.5) * 0.005;
+          _levels[i] = _levels[i].clamp(0.0, 1.0);
+        }
       }
     }
     return;
@@ -489,6 +499,31 @@ void _handleWebMessage(dynamic data) {
           _rampTargets[ch - 1] = null;
           _levels[ch - 1] = level.clamp(0.0, 1.0);
         }
+      case 'song':
+        // Browser selected a demo song: mark which channels have real audio and
+        // hold every other channel silent (Fix 1 — kill phantom channels).
+        final chans =
+            (msg['channels'] as List).map((e) => (e as num).toInt()).toSet();
+        _activeChannels
+          ..clear()
+          ..addAll(chans);
+        for (var i = 0; i < 32; i++) {
+          _rampTargets[i] = null;
+          if (!chans.contains(i + 1)) {
+            _levels[i] = 0.0;
+            _lastSendPerCh[i] = null; // drop stale send from a previous song
+          }
+        }
+      case 'meters':
+        // Real per-stem RMS measured in the browser (Fix 2). This becomes the
+        // meter the app reads, so Auto-Mix reacts to the music's real dynamics.
+        final lv = msg['levels'] as Map<String, dynamic>;
+        lv.forEach((k, v) {
+          final ch = int.tryParse(k);
+          if (ch != null && ch >= 1 && ch <= 32) {
+            _levels[ch - 1] = (v as num).toDouble().clamp(0.0, 1.0);
+          }
+        });
       case 'reset':
         _resetLevels();
     }
@@ -548,6 +583,8 @@ const _kIndexHtml = r'''<!DOCTYPE html>
                  height:0%; transition:height .05s linear; }
   input[type=range] { writing-mode:vertical-lr; direction:rtl; width:24px; height:210px;
                       accent-color:#58a6ff; cursor:pointer; }
+  input[type=range]:disabled { cursor:not-allowed; opacity:0.4; }
+  .ch.off { opacity:0.32; }
   select.song { background:#21262d; color:#e6edf3; border:1px solid #30363d; border-radius:6px;
                 padding:6px 8px; font-size:13px; max-width:280px; }
   #play { min-width:104px; font-weight:600; }
@@ -561,24 +598,25 @@ const _kIndexHtml = r'''<!DOCTYPE html>
   <button id="reset">Reset</button>
   <select id="song" class="song"></select>
   <button id="play">Tocar</button>
-  <span class="hint">Escolha a m&uacute;sica e toque. Arraste os faders (entrada = o quanto o m&uacute;sico toca). Ligue o Auto-Mix no celular e ou&ccedil;a o app segurar o balan&ccedil;o &mdash; barra colorida = n&iacute;vel captado; &ldquo;&rarr;&rdquo; = retorno que o app envia.</span>
+  <span class="hint">Escolha a m&uacute;sica e toque. S&oacute; os instrumentos que tocam ficam ativos; arraste o fader (= o quanto o m&uacute;sico toca). Ligue o Auto-Mix no celular e ou&ccedil;a o app segurar o balan&ccedil;o &mdash; barra colorida = n&iacute;vel REAL captado (RMS); &ldquo;&rarr;&rdquo; = retorno que o app envia.</span>
 </header>
 <div class="board" id="board"></div>
 <script>
   var board = document.getElementById("board");
   var statusEl = document.getElementById("status");
-  var faders = [], fills = [], vals = [], sends = [];
-  var initialized = false;
-  var ws;
-  // Web Audio: toca os stems reais com ganho = entrada (fader azul) x send (app)
-  var actx = null, abufs = {}, asrcs = {}, again = {}, master = null;
-  var songs = [], playing = false, loading = false;
   var selEl = document.getElementById("song");
   var playEl = document.getElementById("play");
+  var faders = [], fills = [], vals = [], sends = [], cards = [], faderVal = [];
+  var initialized = false, ws;
+
+  // Web Audio graph per channel:  source -> inGain(fader) -> analyser -> sendGain(app) -> master
+  var actx = null, master = null, bufs = {}, srcs = {}, inGain = {}, analyser = {}, sendGain = {};
+  var songs = [], curSong = null, playing = false, loading = false, activeSet = {};
+  var meterTimer = null, tdbuf = new Float32Array(2048);
 
   function buildBoard(names) {
     board.innerHTML = "";
-    faders = []; fills = []; vals = []; sends = [];
+    faders = []; fills = []; vals = []; sends = []; cards = []; faderVal = [];
     for (var i = 0; i < 32; i++) {
       var card = document.createElement("div");
       card.className = "ch";
@@ -603,8 +641,14 @@ const _kIndexHtml = r'''<!DOCTYPE html>
       fader.min = "0"; fader.max = "1"; fader.step = "0.01"; fader.value = "0";
       (function (idx, f, v) {
         f.addEventListener("input", function () {
-          v.textContent = Math.round(f.value * 100) + "%";
-          send({ type: "set", ch: idx + 1, level: parseFloat(f.value) });
+          var x = parseFloat(f.value);
+          v.textContent = Math.round(x * 100) + "%";
+          faderVal[idx] = x;
+          var ch = idx + 1;
+          // Fader = how hard the musician plays → scales the input signal.
+          if (inGain[ch] && actx) inGain[ch].gain.setTargetAtTime(x, actx.currentTime, 0.02);
+          // No audio playing → the fader itself is the meter.
+          if (!playing) send({ type: "set", ch: ch, level: x });
         });
       })(i, fader, val);
       row.appendChild(meter);
@@ -621,6 +665,7 @@ const _kIndexHtml = r'''<!DOCTYPE html>
       board.appendChild(card);
 
       faders.push(fader); fills.push(fill); vals.push(val); sends.push(snd);
+      cards.push(card); faderVal.push(0);
     }
   }
 
@@ -630,7 +675,10 @@ const _kIndexHtml = r'''<!DOCTYPE html>
 
   function connect() {
     ws = new WebSocket("ws://" + location.host + "/ws");
-    ws.onopen = function () { statusEl.textContent = "conectado"; statusEl.className = "status ok"; };
+    ws.onopen = function () {
+      statusEl.textContent = "conectado"; statusEl.className = "status ok";
+      if (curSong) send({ type: "song", channels: Object.keys(curSong.channels).map(Number) });
+    };
     ws.onclose = function () {
       statusEl.textContent = "desconectado"; statusEl.className = "status bad";
       setTimeout(connect, 1000);
@@ -640,20 +688,25 @@ const _kIndexHtml = r'''<!DOCTYPE html>
       if (m.type === "config") {
         initialized = false;
         buildBoard(m.names);
+        if (curSong) applyActive(curSong);
       } else if (m.type === "levels") {
         for (var i = 0; i < 32; i++) {
-          var lv = m.levels[i];
-          if (fills[i]) fills[i].style.height = Math.round(lv * 100) + "%";
-          if (!initialized && faders[i]) {
-            faders[i].value = lv;
-            vals[i].textContent = Math.round(lv * 100) + "%";
+          // While playing, the colored bars are driven locally by real RMS
+          // (below); only use the broadcast levels when there is no audio.
+          if (!playing) {
+            var lv = m.levels[i];
+            if (fills[i]) fills[i].style.height = Math.round(lv * 100) + "%";
+            if (!initialized && faders[i] && !faders[i].disabled) {
+              faders[i].value = lv; faderVal[i] = lv;
+              vals[i].textContent = Math.round(lv * 100) + "%";
+            }
           }
           if (sends[i]) {
             sends[i].textContent = (m.sends[i] == null)
               ? "" : ("→ " + Math.round(m.sends[i] * 100) + "%");
           }
         }
-        applyAudioGains(m.levels, m.sends);
+        applySends(m.sends);
         initialized = true;
       }
     };
@@ -664,31 +717,26 @@ const _kIndexHtml = r'''<!DOCTYPE html>
     send({ type: "reset" });
   });
 
-  // ---- Web Audio: tocar os stems reais ------------------------------------
+  // ---- Web Audio: toca os stems reais, mede o RMS real e envia como medidor --
   function ensureCtx() {
     if (!actx) {
       actx = new (window.AudioContext || window.webkitAudioContext)();
-      master = actx.createGain(); master.gain.value = 0.22;
+      master = actx.createGain(); master.gain.value = 0.28;
       var comp = actx.createDynamicsCompressor();
       master.connect(comp); comp.connect(actx.destination);
     }
     if (actx.state === "suspended") actx.resume();
   }
-  function stopAudio() {
-    Object.keys(asrcs).forEach(function (ch) { try { asrcs[ch].stop(); } catch (e) {} });
-    asrcs = {}; again = {}; playing = false;
-    playEl.textContent = "Tocar"; playEl.className = "";
-  }
   function loadSong(song) {
     return new Promise(function (resolve) {
-      ensureCtx(); abufs = {};
+      ensureCtx(); bufs = {};
       var chans = Object.keys(song.channels), done = 0;
       if (!chans.length) { resolve(); return; }
       chans.forEach(function (ch) {
         fetch("/audio/" + song.id + "/" + song.channels[ch])
           .then(function (r) { return r.arrayBuffer(); })
           .then(function (ab) { return actx.decodeAudioData(ab); })
-          .then(function (buf) { abufs[ch] = buf; })
+          .then(function (buf) { bufs[ch] = buf; })
           .catch(function () {})
           .then(function () { if (++done === chans.length) resolve(); });
       });
@@ -696,23 +744,78 @@ const _kIndexHtml = r'''<!DOCTYPE html>
   }
   function startAudio() {
     ensureCtx();
-    var t0 = actx.currentTime + 0.08;
-    Object.keys(abufs).forEach(function (ch) {
-      var src = actx.createBufferSource(); src.buffer = abufs[ch]; src.loop = true;
-      var g = actx.createGain(); g.gain.value = 0;
-      src.connect(g); g.connect(master); src.start(t0);
-      asrcs[ch] = src; again[ch] = g;
+    var t0 = actx.currentTime + 0.1;
+    Object.keys(bufs).forEach(function (ch) {
+      var src = actx.createBufferSource(); src.buffer = bufs[ch]; src.loop = true;
+      var ig = actx.createGain(); ig.gain.value = faderVal[ch - 1] || 0.6;
+      var an = actx.createAnalyser(); an.fftSize = 2048;
+      var sg = actx.createGain(); sg.gain.value = 0;
+      src.connect(ig); ig.connect(an); an.connect(sg); sg.connect(master);
+      src.start(t0);
+      srcs[ch] = src; inGain[ch] = ig; analyser[ch] = an; sendGain[ch] = sg;
     });
-    playing = true; playEl.textContent = "Parar"; playEl.className = "on";
+    playing = true; startMetering();
+    playEl.textContent = "Parar"; playEl.className = "on";
   }
-  function applyAudioGains(levels, snd) {
+  function stopAudio() {
+    stopMetering();
+    Object.keys(srcs).forEach(function (ch) { try { srcs[ch].stop(); } catch (e) {} });
+    srcs = {}; inGain = {}; analyser = {}; sendGain = {}; playing = false;
+    playEl.textContent = "Tocar"; playEl.className = "";
+    // volta os medidores a seguir os faders (modo sem áudio)
+    for (var i = 0; i < 32; i++) {
+      if (faders[i] && !faders[i].disabled) send({ type: "set", ch: i + 1, level: faderVal[i] });
+    }
+  }
+  // RMS do sinal pós-fader → 0..1 (mapeando -50..0 dBFS).
+  function rms01(an) {
+    an.getFloatTimeDomainData(tdbuf);
+    var s = 0; for (var i = 0; i < tdbuf.length; i++) { s += tdbuf[i] * tdbuf[i]; }
+    var db = 20 * Math.log10(Math.sqrt(s / tdbuf.length) + 1e-6);
+    return Math.max(0, Math.min(1, (db + 50) / 50));
+  }
+  function startMetering() {
+    stopMetering();
+    meterTimer = setInterval(function () {
+      if (!playing || !actx) return;
+      var levels = {};
+      Object.keys(analyser).forEach(function (ch) {
+        var lv = rms01(analyser[ch]);
+        levels[ch] = lv;
+        var i = ch - 1;
+        if (fills[i]) fills[i].style.height = Math.round(lv * 100) + "%";
+      });
+      send({ type: "meters", levels: levels });
+    }, 90);
+  }
+  function stopMetering() { if (meterTimer) { clearInterval(meterTimer); meterTimer = null; } }
+  function applySends(snd) {
     if (!playing || !actx) return;
-    Object.keys(again).forEach(function (ch) {
-      var i = parseInt(ch, 10) - 1;
-      var lv = levels[i] || 0;
-      var sd = (snd[i] == null) ? 0.75 : snd[i];
-      again[ch].gain.setTargetAtTime(lv * sd, actx.currentTime, 0.04);
+    Object.keys(sendGain).forEach(function (ch) {
+      var sd = (snd[ch - 1] == null) ? 0.75 : snd[ch - 1];
+      sendGain[ch].gain.setTargetAtTime(sd, actx.currentTime, 0.05);
     });
+  }
+  // Fix 1: só os canais com áudio na música ficam ativos; o resto é silenciado
+  // e o fader desabilitado (nada de "mixar fantasmas").
+  function applyActive(song) {
+    activeSet = {};
+    Object.keys(song.channels).forEach(function (ch) { activeSet[ch] = true; });
+    for (var i = 0; i < 32; i++) {
+      if (!faders[i]) continue;
+      var on = !!activeSet[i + 1];
+      faders[i].disabled = !on;
+      cards[i].className = on ? "ch" : "ch off";
+      if (on) {
+        if (faderVal[i] <= 0) { faders[i].value = 0.6; faderVal[i] = 0.6; vals[i].textContent = "60%"; }
+        if (!playing) send({ type: "set", ch: i + 1, level: faderVal[i] });
+      } else {
+        faders[i].value = 0; faderVal[i] = 0; vals[i].textContent = "—";
+        if (fills[i]) fills[i].style.height = "0%";
+        if (sends[i]) sends[i].textContent = "";
+      }
+    }
+    send({ type: "song", channels: Object.keys(song.channels).map(Number) });
   }
   function loadManifest() {
     fetch("/manifest").then(function (r) { return r.json(); }).then(function (j) {
@@ -723,21 +826,26 @@ const _kIndexHtml = r'''<!DOCTYPE html>
         o.value = idx; o.textContent = s.title + "  (" + s.genre + ")";
         selEl.appendChild(o);
       });
+      if (songs.length) { curSong = songs[0]; applyActive(curSong); }
     }).catch(function () {});
   }
   playEl.addEventListener("click", function () {
     if (playing) { stopAudio(); return; }
     if (loading || !songs.length) return;
-    var song = songs[parseInt(selEl.value || "0", 10)];
-    if (!song) return;
+    curSong = songs[parseInt(selEl.value || "0", 10)];
     loading = true; playEl.textContent = "carregando...";
-    loadSong(song).then(function () { loading = false; startAudio(); });
+    applyActive(curSong);
+    loadSong(curSong).then(function () { loading = false; startAudio(); });
   });
   selEl.addEventListener("change", function () {
-    if (playing) { stopAudio(); playEl.click(); }
+    var wasPlaying = playing;
+    if (playing) stopAudio();
+    curSong = songs[parseInt(selEl.value || "0", 10)];
+    if (curSong) applyActive(curSong);
+    if (wasPlaying) playEl.click();
   });
-  loadManifest();
 
+  loadManifest();
   connect();
 </script>
 </body>
