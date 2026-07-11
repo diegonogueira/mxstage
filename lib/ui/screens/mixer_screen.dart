@@ -39,6 +39,7 @@ class _MixerScreenState extends State<MixerScreen> {
     _loadLiveBus();
     _loadGenre();
     _loadOverrides();
+    _loadBoosts();
   }
 
   // Restaura as sobreposições manuais de instrumento salvas para esta mesa.
@@ -48,6 +49,15 @@ class _MixerScreenState extends State<MixerScreen> {
     final map = await AppSettings.instrumentOverrides(mixer);
     if (!mounted || map.isEmpty) return;
     _client.setInstrumentOverrides(map);
+  }
+
+  // Restaura os reforços (boost, dB) por canal salvos para esta mesa.
+  Future<void> _loadBoosts() async {
+    final mixer = _client.mixerName;
+    if (mixer == null || mixer.isEmpty) return;
+    final map = await AppSettings.channelBoosts(mixer);
+    if (!mounted || map.isEmpty) return;
+    _client.setChannelBoosts(map);
   }
 
   Future<void> _loadLiveBus() async {
@@ -143,6 +153,14 @@ class _MixerScreenState extends State<MixerScreen> {
           await AppSettings.setInstrumentOverride(mixer, ch.ch, type);
         }
       },
+      boostDb: _client.channelBoostDb(ch.ch),
+      onBoostChanged: (db) async {
+        _client.setChannelBoost(ch.ch, db);
+        final mixer = _client.mixerName;
+        if (mixer != null && mixer.isNotEmpty) {
+          await AppSettings.setChannelBoost(mixer, ch.ch, db);
+        }
+      },
     );
   }
 
@@ -225,6 +243,7 @@ class _MixerScreenState extends State<MixerScreen> {
               meterDb: _client.meterDisplayDb,
               onLevelChanged: (ch, v) => _client.setChannelSend(ch, v),
               isOverridden: _client.isOverridden,
+              boostDb: _client.channelBoostDb,
               onEditInstrument: _editInstrument,
             ),
           ),
@@ -552,6 +571,7 @@ class _FaderBoard extends StatelessWidget {
   final double Function(int channelIndex) meterDb;
   final void Function(int ch, double level) onLevelChanged;
   final bool Function(int ch) isOverridden;
+  final double Function(int ch) boostDb;
   final void Function(ChannelInfo ch) onEditInstrument;
 
   const _FaderBoard({
@@ -562,6 +582,7 @@ class _FaderBoard extends StatelessWidget {
     required this.meterDb,
     required this.onLevelChanged,
     required this.isOverridden,
+    required this.boostDb,
     required this.onEditInstrument,
   });
 
@@ -589,6 +610,7 @@ class _FaderBoard extends StatelessWidget {
             compact: isLandscape,
             muted: muted,
             meterDb: meterDb(chIdx),
+            boostDb: boostDb(ch.ch),
             onLevelChanged: (v) => onLevelChanged(ch.ch, v),
             onEditInstrument: () => onEditInstrument(ch),
           );
@@ -606,6 +628,7 @@ class _ChannelStrip extends StatelessWidget {
   final bool compact;
   final bool muted;
   final double meterDb;
+  final double boostDb;
   final ValueChanged<double> onLevelChanged;
   final VoidCallback onEditInstrument;
 
@@ -617,6 +640,7 @@ class _ChannelStrip extends StatelessWidget {
     required this.compact,
     required this.muted,
     required this.meterDb,
+    required this.boostDb,
     required this.onLevelChanged,
     required this.onEditInstrument,
   });
@@ -634,6 +658,10 @@ class _ChannelStrip extends StatelessWidget {
             ? AppColors.blue
             : AppColors.amber;
 
+    // Reforço manual deste canal (dB): verde = +, âmbar = −.
+    final boosted = boostDb != 0 && !muted;
+    final boostColor = boostDb > 0 ? AppColors.green : AppColors.amber;
+
     return SizedBox(
       width: width,
       child: Container(
@@ -641,7 +669,9 @@ class _ChannelStrip extends StatelessWidget {
         decoration: BoxDecoration(
           color: AppColors.panel,
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: AppColors.border),
+          border: Border.all(
+            color: boosted ? boostColor.withAlpha(160) : AppColors.border,
+          ),
         ),
         child: Column(
           children: [
@@ -697,6 +727,17 @@ class _ChannelStrip extends StatelessWidget {
                         if (overridden && !muted) ...[
                           const SizedBox(width: 3),
                           const Icon(Icons.edit, size: 9, color: AppColors.blue),
+                        ],
+                        if (boosted) ...[
+                          const SizedBox(width: 3),
+                          Text(
+                            '${boostDb > 0 ? '+' : ''}${boostDb.toStringAsFixed(0)}',
+                            style: TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w700,
+                              color: boostColor,
+                            ),
+                          ),
                         ],
                       ],
                     ),

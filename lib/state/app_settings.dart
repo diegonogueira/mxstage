@@ -25,6 +25,7 @@ class AppSettings {
   static String _stageBusKey(String mixer) => 'stage_bus:$mixer';
   static String _genreKey(String mixer) => 'genre:$mixer';
   static String _overrideKey(String mixer) => 'instr_override:$mixer';
+  static String _boostKey(String mixer) => 'ch_boost:$mixer';
 
   /// Bus atualmente designado como o da transmissão, ou `null` se nunca definido.
   static Future<int?> liveBus() async {
@@ -126,6 +127,57 @@ class AppSettings {
     await prefs.remove(_overrideKey(mixer));
   }
 
+  // ── Reforço por canal (boost, dB) por mesa ─────────────────────────────────
+
+  /// Reforços salvos desta [mixer] — ch (1-based) → dB. Vazio se não houver.
+  static Future<Map<int, double>> channelBoosts(String mixer) async {
+    if (mixer.isEmpty) return {};
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_boostKey(mixer));
+    if (raw == null || raw.isEmpty) return {};
+    final result = <int, double>{};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        decoded.forEach((key, value) {
+          final ch = int.tryParse(key.toString());
+          final db = (value is num) ? value.toDouble() : null;
+          if (ch != null && db != null && db != 0) result[ch] = db;
+        });
+      }
+    } catch (_) {
+      return {};
+    }
+    return result;
+  }
+
+  /// Define (ou remove, com [db] `0`) o reforço do canal [ch] nesta [mixer].
+  static Future<void> setChannelBoost(String mixer, int ch, double db) async {
+    if (mixer.isEmpty) return;
+    final current = await channelBoosts(mixer);
+    if (db == 0) {
+      current.remove(ch);
+    } else {
+      current[ch] = db;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    if (current.isEmpty) {
+      await prefs.remove(_boostKey(mixer));
+      return;
+    }
+    final encoded = jsonEncode(
+      {for (final e in current.entries) e.key.toString(): e.value},
+    );
+    await prefs.setString(_boostKey(mixer), encoded);
+  }
+
+  /// Zera todos os reforços desta [mixer].
+  static Future<void> clearChannelBoosts(String mixer) async {
+    if (mixer.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_boostKey(mixer));
+  }
+
   /// Apaga TODAS as preferências que o app grava (Live bus + bus/gênero/overrides
   /// por mesa). Remove só as nossas chaves — não toca em prefs de plugins.
   static Future<void> clearAll() async {
@@ -135,7 +187,8 @@ class AppSettings {
               k == _kLiveBus ||
               k.startsWith('stage_bus:') ||
               k.startsWith('genre:') ||
-              k.startsWith('instr_override:'),
+              k.startsWith('instr_override:') ||
+              k.startsWith('ch_boost:'),
         );
     for (final k in ours.toList()) {
       await prefs.remove(k);

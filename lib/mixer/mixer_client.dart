@@ -179,6 +179,42 @@ class MixerClient extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ── Reforço por canal (boost) ──────────────────────────────────────────────
+  // Deslocamento manual (dB) sobre o alvo do preset, por canal ("mais/menos
+  // este"). Vai direto no engine (`boostDb`), que o relê a cada tick — como o
+  // override, não precisa re-anchorar o clamp.
+
+  /// Reforço atual (dB) do canal [ch] (1-based). 0 = neutro.
+  double channelBoostDb(int ch) => _engine.boostDb[ch] ?? 0.0;
+
+  /// `true` se o canal [ch] tem reforço diferente de zero.
+  bool isBoosted(int ch) => (_engine.boostDb[ch] ?? 0.0) != 0.0;
+
+  /// Define o reforço (dB) do canal [ch] (1-based). 0 remove.
+  void setChannelBoost(int ch, double db) {
+    if (db == 0.0) {
+      _engine.boostDb.remove(ch);
+    } else {
+      _engine.boostDb[ch] = db;
+    }
+    notifyListeners();
+  }
+
+  /// Carga em lote dos reforços (no connect, com o mapa salvo da mesa).
+  void setChannelBoosts(Map<int, double> map) {
+    _engine.boostDb
+      ..clear()
+      ..addAll(map);
+    notifyListeners();
+  }
+
+  /// Zera todos os reforços desta mesa.
+  void clearChannelBoosts() {
+    if (_engine.boostDb.isEmpty) return;
+    _engine.boostDb.clear();
+    notifyListeners();
+  }
+
   set busIndex(int v) {
     _busIndex = v.clamp(1, kMixBusCount);
     notifyListeners();
@@ -364,6 +400,7 @@ class MixerClient extends ChangeNotifier {
     disableAutoMix();
     _baselineLevels.clear();
     _overrides.clear();
+    _engine.boostDb.clear();
     _muted = false;
     _preMuteLevels.clear();
     _meterNotifyTimer?.cancel();

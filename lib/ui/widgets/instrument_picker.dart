@@ -20,6 +20,8 @@ Future<void> showInstrumentPicker(
   required InstrumentType detected,
   required bool isOverridden,
   required void Function(InstrumentType? type) onSelected,
+  required double boostDb,
+  required void Function(double db) onBoostChanged,
 }) {
   return showModalBottomSheet<void>(
     context: context,
@@ -34,7 +36,9 @@ Future<void> showInstrumentPicker(
         onSelected(type);
       }
 
-      return SafeArea(
+      double boost = boostDb;
+      return StatefulBuilder(
+        builder: (ctx, setSheet) => SafeArea(
         child: ConstrainedBox(
           constraints: BoxConstraints(
             maxHeight: MediaQuery.of(sheetCtx).size.height * 0.75,
@@ -71,6 +75,13 @@ Future<void> showInstrumentPicker(
                   style: TextStyle(fontSize: 11, color: Colors.white38),
                 ),
               ),
+              _BoostControl(
+                value: boost,
+                onChanged: (v) {
+                  setSheet(() => boost = v);
+                  onBoostChanged(v);
+                },
+              ),
               Flexible(
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
@@ -97,7 +108,8 @@ Future<void> showInstrumentPicker(
             ],
           ),
         ),
-      );
+      ),
+    );
     },
   );
 }
@@ -278,6 +290,108 @@ class _InstrumentChip extends StatelessWidget {
       ),
       visualDensity: VisualDensity.compact,
       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    );
+  }
+}
+
+/// Controle de reforço do canal (dB): quanto MAIS (ou menos) o músico quer ouvir
+/// este canal, sobre o alvo do estilo. Verde = +, âmbar = −. Vive dentro do
+/// mesmo bottom-sheet do tipo de instrumento.
+class _BoostControl extends StatelessWidget {
+  final double value;
+  final ValueChanged<double> onChanged;
+
+  const _BoostControl({required this.value, required this.onChanged});
+
+  static const double _min = -9, _max = 9, _step = 1;
+
+  @override
+  Widget build(BuildContext context) {
+    final active = value != 0;
+    final color = value > 0
+        ? AppColors.green
+        : (value < 0 ? AppColors.amber : Colors.white54);
+    final label = value == 0
+        ? '0 dB'
+        : '${value > 0 ? '+' : ''}${value.toStringAsFixed(0)} dB';
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+      padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+      decoration: BoxDecoration(
+        color: AppColors.elevated,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: active ? color.withAlpha(150) : AppColors.border,
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.tune, size: 18, color: active ? color : Colors.white54),
+          const SizedBox(width: 10),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Reforço deste canal',
+                    style:
+                        TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                Text('quanto MAIS (ou menos) você quer ouvir este canal',
+                    style: TextStyle(fontSize: 11, color: Colors.white38)),
+              ],
+            ),
+          ),
+          _StepBtn(
+            icon: Icons.remove,
+            onTap: value > _min
+                ? () => onChanged((value - _step).clamp(_min, _max))
+                : null,
+          ),
+          SizedBox(
+            width: 56,
+            child: Text(
+              label,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+                color: color,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          ),
+          _StepBtn(
+            icon: Icons.add,
+            onTap: value < _max
+                ? () => onChanged((value + _step).clamp(_min, _max))
+                : null,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StepBtn extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback? onTap;
+
+  const _StepBtn({required this.icon, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.panel,
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(6),
+          child: Icon(icon,
+              size: 18, color: onTap == null ? Colors.white24 : Colors.white70),
+        ),
+      ),
     );
   }
 }

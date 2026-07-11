@@ -47,7 +47,7 @@ class EngineParams {
     this.gateDb = -45.0,
     this.deadbandDb = 1.0,
     this.maxStepDb = 2.0,
-    this.maxBoostDb = 9.0,
+    this.maxBoostDb = 12.0,
     this.sendFloorDb = -60.0,
     this.sendCeilingDb = 0.0,
     this.refFollowSeconds = 1e12, // hold the reference fixed by default
