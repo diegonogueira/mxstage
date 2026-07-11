@@ -32,9 +32,11 @@ class EngineParams {
   final double sendFloorDb;
   final double sendCeilingDb;
 
-  /// Time constant (seconds) for the slow reference level C to follow the
-  /// loudest channel. Long → the reference rides the band's overall energy but
-  /// ignores momentary single-channel spikes (those get ducked instead).
+  /// Time constant (seconds) for the reference level C to follow the loudest
+  /// channel. The default is effectively infinite → C stays **fixed** (holds
+  /// the balance the musician set; a uniform whole-band rise is ducked, not
+  /// ridden). A finite value makes C slowly ride the band's overall energy
+  /// instead, ignoring momentary single-channel spikes (those still get ducked).
   final double refFollowSeconds;
 
   /// Correction tick interval (ms). Must match the caller's timer
@@ -48,7 +50,7 @@ class EngineParams {
     this.maxBoostDb = 9.0,
     this.sendFloorDb = -60.0,
     this.sendCeilingDb = 0.0,
-    this.refFollowSeconds = 25.0,
+    this.refFollowSeconds = 1e12, // hold the reference fixed by default
     this.tickMs = 1000,
   });
 
@@ -65,13 +67,16 @@ class EngineParams {
 /// target relative to the lead vocal, so nothing drowns out anything else. The
 /// send for each channel is computed as compensation:
 ///
-///     send(ch) = C + target(instrument) + boost − meter(ch)
+///     send(ch) = C + master + target(instrument) + boost − meter(ch)
 ///
 /// so when a musician plays louder (meter up) the send comes down by the same
-/// amount, keeping their monitor level on target. `C` is a slow reference that
-/// tracks the loudest channel over [EngineParams.refFollowSeconds]: the whole
-/// mix rides the band's energy, but a sudden single-channel surge is ducked
-/// back into place instead of dragging everyone up with it.
+/// amount, and when they play quieter it comes up (bounded by [maxBoostDb]) —
+/// keeping every instrument at its target monitor level. `C` is the band's base
+/// level, seeded at activation to preserve the current balance and then held
+/// fixed: a stable personal-monitor reference. [masterDb] is the musician's
+/// overall "volume geral" (shifts the whole monitor without touching the
+/// balance). Set [EngineParams.refFollowSeconds] finite to instead let `C` ride
+/// the band's own energy.
 ///
 /// Call [activate] when the user turns on Auto-Mix to snapshot starting sends.
 /// Call [update] on each slow-meter tick to get the list of sends to apply.
@@ -96,6 +101,11 @@ class AutoMixEngine {
 
   // Per-channel user boost (dB), applied on top of preset target.
   Map<int, double> boostDb = {};
+
+  // Overall master level (dB) — the musician's "volume geral". Shifts the whole
+  // monitor up/down without changing the balance between channels. 0 = the
+  // level seeded at activation.
+  double masterDb = 0.0;
 
   /// Activate with the current send levels as the baseline.
   /// [currentSendFloats]: map of ch (1-based) → current fader float (0..1).
@@ -172,8 +182,8 @@ class AutoMixEngine {
       final targetRel = preset.targetFor(instrument) + (boostDb[ch] ?? 0.0);
 
       // Compensation: send needed so this channel sits at its target monitor
-      // level. Louder meter → lower send.
-      var sendTarget = ref + targetRel - meter;
+      // level. Louder meter → lower send; quieter meter → higher send.
+      var sendTarget = ref + masterDb + targetRel - meter;
 
       // Safety bounds: duck freely, cap boost above baseline, absolute limits.
       final baseline = _refSendDb[ch] ?? _currentSendDb[ch] ?? params.sendFloorDb;

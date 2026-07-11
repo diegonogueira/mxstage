@@ -134,10 +134,41 @@ void main() {
     });
   });
 
-  group('reference follows the band', () {
+  group('reference holds by default', () {
+    test('a uniform whole-band rise is ducked back (holds the mix)', () {
+      // Default engine now holds the reference fixed (refFollowSeconds → ∞).
+      final engine = AutoMixEngine();
+      engine.activate({1: 0.5, 2: 0.5}); // baseline -10 dB → room to move
+      final instrs =
+          _instruments({1: InstrumentType.leadVocal, 2: InstrumentType.keys});
+
+      // Balanced start (keys 7 dB under the vocal), seeds the fixed reference.
+      engine.update(_meters(active: {1: -10.0, 2: -17.0}), instrs, preset);
+
+      // Entire band gets 6 dB louder, uniformly.
+      double vocalFloat = 0.5, keysFloat = 0.5;
+      for (var i = 0; i < 25; i++) {
+        final cmds =
+            engine.update(_meters(active: {1: -4.0, 2: -11.0}), instrs, preset);
+        for (final c in cmds) {
+          if (c.ch == 1) vocalFloat = c.levelFloat;
+          if (c.ch == 2) keysFloat = c.levelFloat;
+        }
+      }
+
+      // Held reference → both ducked ~6 dB to keep the monitor on target
+      // (the mix is held, not ridden up with the band).
+      expect(floatToDb(vocalFloat), lessThan(floatToDb(0.5) - 3.0),
+          reason: 'vocal must duck as the band rose (mix held)');
+      expect(floatToDb(keysFloat), lessThan(floatToDb(0.5) - 3.0),
+          reason: 'keys must duck too');
+    });
+  });
+
+  group('reference rides the band (opt-in)', () {
     test('a uniform whole-band rise returns sends to baseline (monitor rides up)',
         () {
-      // Fast reference so it converges within the test horizon.
+      // Opt-in: a finite time constant makes the reference ride the band.
       const params = EngineParams(refFollowSeconds: 1.0);
       final engine = AutoMixEngine(params: params);
       engine.activate({1: 0.75, 2: 0.75});
