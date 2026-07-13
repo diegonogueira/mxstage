@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../mixer/mixer_client.dart';
 import '../../osc/osc_codec.dart';
@@ -195,6 +196,35 @@ class _MixerScreenState extends State<MixerScreen> {
     }
   }
 
+  // Exporta o log de diagnóstico (JSONL) pelo share sheet — WhatsApp, Files,
+  // Drive, e-mail. Mesmo caminho do PDF do manual.
+  Future<void> _exportDiagnostic() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final box = context.findRenderObject() as RenderBox?;
+    final origin =
+        box != null ? box.localToGlobal(Offset.zero) & box.size : null;
+
+    final path = await _client.exportSessionLog();
+    if (path == null) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Nada gravado ainda — conecte, ligue o Auto-Mix e toque um pouco.',
+          ),
+        ),
+      );
+      return;
+    }
+    await SharePlus.instance.share(
+      ShareParams(
+        files: [XFile(path, mimeType: 'application/json')],
+        subject: 'MXWise — diagnóstico da sessão',
+        text: 'Log de diagnóstico do Auto-Mix (JSONL) para análise.',
+        sharePositionOrigin: origin,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isLandscape = MediaQuery.orientationOf(context) == Orientation.landscape;
@@ -290,6 +320,7 @@ class _MixerScreenState extends State<MixerScreen> {
           tooltip: 'Mais opções',
           onSelected: (v) {
             if (v == 'reset_instruments') _resetOverrides();
+            if (v == 'export_diagnostic') _exportDiagnostic();
           },
           itemBuilder: (_) => const [
             PopupMenuItem(
@@ -299,6 +330,16 @@ class _MixerScreenState extends State<MixerScreen> {
                   Icon(Icons.auto_fix_high, size: 18, color: AppColors.blue),
                   SizedBox(width: 10),
                   Text('Restaurar detecção automática'),
+                ],
+              ),
+            ),
+            PopupMenuItem(
+              value: 'export_diagnostic',
+              child: Row(
+                children: [
+                  Icon(Icons.bug_report_outlined, size: 18, color: AppColors.amber),
+                  SizedBox(width: 10),
+                  Text('Exportar diagnóstico'),
                 ],
               ),
             ),

@@ -99,6 +99,10 @@ class AutoMixEngine {
   // Slow reference level C (dB). Null until seeded on the first active tick.
   double? _refLevelDb;
 
+  /// Referência lenta C (dB) do último tick, ou null antes do primeiro tick
+  /// ativo. Só para diagnóstico/log — não afeta a correção.
+  double? get refLevelDb => _refLevelDb;
+
   // Per-channel user boost (dB), applied on top of preset target.
   Map<int, double> boostDb = {};
 

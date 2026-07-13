@@ -9,6 +9,7 @@ import '../platform/background_keepalive.dart';
 import '../state/channel_mapper.dart';
 import '../state/genre_presets.dart';
 import '../state/instrument_type.dart';
+import '../state/session_log.dart';
 import 'meter_stream.dart';
 
 class DiscoveredMixer {
@@ -65,6 +66,7 @@ class MixerClient extends ChangeNotifier {
 
   final _meters = MeterStream();
   final _engine = AutoMixEngine();
+  final _log = SessionLogger();
   Genre _genre = Genre.general;
 
   // Baseline send levels read from the mixer at connect time.
@@ -120,6 +122,13 @@ class MixerClient extends ChangeNotifier {
   bool get autoMixActive => _engine.isActive;
   bool get isMuted => _muted;
 
+  /// Quantos registros de diagnóstico já foram gravados nesta sessão.
+  int get diagnosticRecordCount => _log.recordCount;
+
+  /// Escreve o log de diagnóstico da sessão num arquivo e devolve o caminho
+  /// (pra o share sheet). `null` se nada foi gravado ainda.
+  Future<String?> exportSessionLog() => _log.writeToFile();
+
   /// Fast-smoothed dB for display (~300ms EMA). 0-based channel index.
   double meterDisplayDb(int channelIndex) => _meters.displayDb(channelIndex);
 
@@ -155,6 +164,12 @@ class MixerClient extends ChangeNotifier {
       _overrides[ch] = type;
     }
     _applyEffective(idx);
+    _log.event('override', {
+      'ch': ch,
+      'type': type?.name,
+      'detected': _detected[idx].name,
+      'effective': instruments[idx].name,
+    });
     notifyListeners();
   }
 
@@ -197,6 +212,7 @@ class MixerClient extends ChangeNotifier {
     } else {
       _engine.boostDb[ch] = db;
     }
+    _log.event('boost', {'ch': ch, 'db': db});
     notifyListeners();
   }
 
@@ -234,6 +250,7 @@ class MixerClient extends ChangeNotifier {
     }
     _busIndex = next;
     _baselineLevels.clear();
+    _log.event('bus', {'bus': next});
     notifyListeners();
     await _fetchSendLevels();
   }
@@ -245,12 +262,28 @@ class MixerClient extends ChangeNotifier {
       final ref = {for (final ch in channels) ch.ch: _baselineLevels[ch.ch] ?? ch.sendLevel};
       _engine.activate(ref);
     }
+    _log.event('genre', {'genre': g.name});
     notifyListeners();
   }
 
   void enableAutoMix() {
     final ref = {for (final ch in channels) ch.ch: _baselineLevels[ch.ch] ?? ch.sendLevel};
     _engine.activate(ref);
+    _log.activate(
+      baseline: ref,
+      genre: _genre.name,
+      master: _engine.masterDb,
+      channels: [
+        for (final ch in channels)
+          {
+            'ch': ch.ch,
+            'name': ch.name,
+            'detected': _detected[ch.ch - 1].name,
+            'effective': instruments[ch.ch - 1].name,
+            'boost': _engine.boostDb[ch.ch] ?? 0.0,
+          },
+      ],
+    );
     _engineTimer?.cancel();
     _engineTimer = Timer.periodic(
       Duration(milliseconds: kCorrectionIntervalMs),
@@ -271,6 +304,7 @@ class MixerClient extends ChangeNotifier {
     _engine.deactivate();
     _engineTimer?.cancel();
     _engineTimer = null;
+    _log.event('autoMixOff');
     notifyListeners();
   }
 
@@ -288,6 +322,7 @@ class MixerClient extends ChangeNotifier {
       }
     }
     _muted = !_muted;
+    _log.event('mute', {'muted': _muted});
     notifyListeners();
   }
 
@@ -295,6 +330,11 @@ class MixerClient extends ChangeNotifier {
     final preset = kGenrePresets[_genre]!;
     final meterDb = _meters.engineSnapshot;
     final cmds = _engine.update(meterDb, instruments, preset);
+    _log.tick(
+      meterDb: meterDb,
+      refC: _engine.refLevelDb,
+      cmds: {for (final c in cmds) c.ch: c.levelFloat},
+    );
     for (final cmd in cmds) {
       setChannelSend(cmd.ch, cmd.levelFloat);
     }
@@ -386,6 +426,7 @@ class MixerClient extends ChangeNotifier {
     });
 
     _connected = true;
+    _log.start(mixerName: _mixerName, model: _mixerModel, bus: _busIndex);
     notifyListeners();
 
     // Keep the process alive in the background so the meter subscription and
@@ -397,6 +438,8 @@ class MixerClient extends ChangeNotifier {
 
   Future<void> disconnect() async {
     unawaited(BackgroundKeepAlive.disable());
+    // Log kept in memory so a diagnostic can still be exported after the service.
+    _log.event('disconnect');
     disableAutoMix();
     _baselineLevels.clear();
     _overrides.clear();
