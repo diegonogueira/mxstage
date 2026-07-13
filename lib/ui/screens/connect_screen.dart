@@ -37,6 +37,14 @@ class _ConnectScreenState extends State<ConnectScreen>
     WidgetsBinding.instance.addObserver(this);
     _client.startDiscovery();
     _loadLiveBus();
+    _loadDebugMode();
+  }
+
+  // Restaura o Modo debug persistido (por device). Ligado → o cliente grava o
+  // log de diagnóstico e a UI mostra o botão de exportar.
+  Future<void> _loadDebugMode() async {
+    final on = await AppSettings.debugMode();
+    if (mounted) _client.debugLog = on;
   }
 
   void _onClientChange() {
@@ -345,6 +353,28 @@ class _ConnectScreenState extends State<ConnectScreen>
                     'Zerar configurações salvas',
                     style: TextStyle(color: AppColors.textMuted),
                   ),
+                ),
+              ),
+
+              // Modo debug (dev): liga a gravação do log de diagnóstico e revela
+              // o botão "Exportar diagnóstico" no mixer. Desligado por padrão.
+              const SizedBox(height: 4),
+              SwitchListTile(
+                value: _client.debugLog,
+                onChanged: (v) async {
+                  _client.debugLog = v;
+                  await AppSettings.setDebugMode(v);
+                },
+                dense: true,
+                activeThumbColor: AppColors.blue,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+                secondary: const Icon(Icons.bug_report_outlined,
+                    size: 20, color: AppColors.textMuted),
+                title: const Text('Modo debug',
+                    style: TextStyle(fontSize: 13.5, color: AppColors.textMuted)),
+                subtitle: const Text(
+                  'Grava a sessão e mostra "Exportar diagnóstico"',
+                  style: TextStyle(fontSize: 11.5, color: AppColors.textMuted),
                 ),
               ),
             ],

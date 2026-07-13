@@ -21,6 +21,7 @@ class AppSettings {
   AppSettings._();
 
   static const _kLiveBus = 'live_bus';
+  static const _kDebugMode = 'debug_mode';
 
   static String _stageBusKey(String mixer) => 'stage_bus:$mixer';
   static String _genreKey(String mixer) => 'genre:$mixer';
@@ -38,6 +39,19 @@ class AppSettings {
   static Future<void> setLiveBus(int bus) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_kLiveBus, bus);
+  }
+
+  /// Modo debug (global, por device). Desligado por padrão: sem ele o app **não
+  /// grava** o log de diagnóstico e o botão de exportar fica escondido. Fora do
+  /// [clearAll] de propósito — é um toggle de dev, não uma preferência de mesa.
+  static Future<bool> debugMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_kDebugMode) ?? false;
+  }
+
+  static Future<void> setDebugMode(bool on) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kDebugMode, on);
   }
 
   /// Último bus de retorno do Stage usado nesta [mixer], ou `null` se nunca.

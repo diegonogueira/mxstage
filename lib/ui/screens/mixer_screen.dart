@@ -322,8 +322,8 @@ class _MixerScreenState extends State<MixerScreen> {
             if (v == 'reset_instruments') _resetOverrides();
             if (v == 'export_diagnostic') _exportDiagnostic();
           },
-          itemBuilder: (_) => const [
-            PopupMenuItem(
+          itemBuilder: (_) => [
+            const PopupMenuItem(
               value: 'reset_instruments',
               child: Row(
                 children: [
@@ -333,16 +333,18 @@ class _MixerScreenState extends State<MixerScreen> {
                 ],
               ),
             ),
-            PopupMenuItem(
-              value: 'export_diagnostic',
-              child: Row(
-                children: [
-                  Icon(Icons.bug_report_outlined, size: 18, color: AppColors.amber),
-                  SizedBox(width: 10),
-                  Text('Exportar diagnóstico'),
-                ],
+            // Só com o Modo debug ligado (ver ConnectScreen).
+            if (_client.debugLog)
+              const PopupMenuItem(
+                value: 'export_diagnostic',
+                child: Row(
+                  children: [
+                    Icon(Icons.bug_report_outlined, size: 18, color: AppColors.amber),
+                    SizedBox(width: 10),
+                    Text('Exportar diagnóstico'),
+                  ],
+                ),
               ),
-            ),
           ],
         ),
       ],

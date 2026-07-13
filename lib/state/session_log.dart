@@ -27,15 +27,26 @@ class SessionLogger {
   DateTime? _startedAt;
   bool _capped = false;
 
-  bool get isRecording => _startedAt != null;
+  /// Só grava quando ligado (espelha o Modo debug). Desligado = nada é
+  /// acumulado, e [writeToFile] devolve `null`.
+  bool enabled = false;
+
+  bool get isRecording => enabled && _startedAt != null;
   int get recordCount => _lines.length;
 
   int _ms() => _startedAt == null
       ? 0
       : DateTime.now().difference(_startedAt!).inMilliseconds;
 
+  /// Descarta tudo e para de gravar (chamado ao desligar o Modo debug).
+  void reset() {
+    _lines.clear();
+    _startedAt = null;
+    _capped = false;
+  }
+
   void _add(Map<String, Object?> record) {
-    if (_startedAt == null) return;
+    if (!enabled || _startedAt == null) return;
     if (_lines.length >= maxRecords) {
       _capped = true;
       return;
@@ -48,8 +59,9 @@ class SessionLogger {
   static double _r1(double v) => (v * 10).roundToDouble() / 10;
   static double _r4(double v) => (v * 10000).roundToDouble() / 10000;
 
-  /// Inicia uma sessão nova (limpa o buffer anterior).
+  /// Inicia uma sessão nova (limpa o buffer anterior). No-op se desligado.
   void start({String? mixerName, String? model, required int bus}) {
+    if (!enabled) return;
     _startedAt = DateTime.now();
     _lines.clear();
     _capped = false;

@@ -74,6 +74,7 @@ class MixerClient extends ChangeNotifier {
   // auto-mix is toggled or the genre preset is changed.
   final Map<int, double> _baselineLevels = {};
   bool _muted = false;
+  bool _debugLog = false;
   final Map<int, double> _preMuteLevels = {};
 
   final List<DiscoveredMixer> discovered = [];
@@ -125,8 +126,28 @@ class MixerClient extends ChangeNotifier {
   /// Quantos registros de diagnóstico já foram gravados nesta sessão.
   int get diagnosticRecordCount => _log.recordCount;
 
+  /// Modo debug: liga/desliga a gravação do log de diagnóstico. Desligado
+  /// (padrão), o app não grava nada e a UI esconde o botão de exportar. Ao
+  /// ligar já conectado, começa uma sessão de log na hora; ao desligar,
+  /// descarta o que tinha.
+  bool get debugLog => _debugLog;
+  set debugLog(bool v) {
+    if (_debugLog == v) return;
+    _debugLog = v;
+    _log.enabled = v;
+    if (v) {
+      if (_connected) {
+        _log.start(mixerName: _mixerName, model: _mixerModel, bus: _busIndex);
+      }
+    } else {
+      _log.reset();
+    }
+    notifyListeners();
+  }
+
   /// Escreve o log de diagnóstico da sessão num arquivo e devolve o caminho
-  /// (pra o share sheet). `null` se nada foi gravado ainda.
+  /// (pra o share sheet). `null` se o modo debug está desligado ou nada foi
+  /// gravado ainda.
   Future<String?> exportSessionLog() => _log.writeToFile();
 
   /// Fast-smoothed dB for display (~300ms EMA). 0-based channel index.
@@ -426,7 +447,9 @@ class MixerClient extends ChangeNotifier {
     });
 
     _connected = true;
-    _log.start(mixerName: _mixerName, model: _mixerModel, bus: _busIndex);
+    if (_debugLog) {
+      _log.start(mixerName: _mixerName, model: _mixerModel, bus: _busIndex);
+    }
     notifyListeners();
 
     // Keep the process alive in the background so the meter subscription and
