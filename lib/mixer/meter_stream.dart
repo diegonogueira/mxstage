@@ -13,6 +13,7 @@ class MeterStream {
   // EMA alpha for ~3s engine smoothing: 1 - exp(-50/3000) ≈ 0.016
   static const _engineAlpha = 0.016;
 
+  final List<double> _rawDb = List.filled(48, -90.0);
   final List<double> _displayDb = List.filled(48, -90.0);
   final List<double> _engineDb = List.filled(48, -90.0);
 
@@ -24,6 +25,7 @@ class MeterStream {
   void update(List<double> linearFloats) {
     for (var i = 0; i < linearFloats.length && i < 48; i++) {
       final db = _linearToDb(linearFloats[i].clamp(0.0, 1.0));
+      _rawDb[i] = db;
       _displayDb[i] = _displayAlpha * db + (1 - _displayAlpha) * _displayDb[i];
       _engineDb[i] = _engineAlpha * db + (1 - _engineAlpha) * _engineDb[i];
     }
@@ -40,4 +42,17 @@ class MeterStream {
   /// Snapshot of all 32 slow-smoothed input channel dB values.
   List<double> get engineSnapshot =>
       List.unmodifiable(_engineDb.sublist(0, kInputChannelCount));
+
+  /// Snapshot of all 32 fast-smoothed (~300ms) input channel dB values — what
+  /// the on-screen VU bars show. Logged next to [engineSnapshot] for diagnosis:
+  /// if this rides much higher than the engine snapshot, the slow engine
+  /// smoothing is what's pulling levels under the gate.
+  List<double> get displaySnapshot =>
+      List.unmodifiable(_displayDb.sublist(0, kInputChannelCount));
+
+  /// Snapshot of all 32 raw (unsmoothed, instantaneous) input channel dB values.
+  /// Logged for diagnosis: if even this sits low, the meter bank/scale itself is
+  /// low — not the smoothing.
+  List<double> get rawSnapshot =>
+      List.unmodifiable(_rawDb.sublist(0, kInputChannelCount));
 }

@@ -196,6 +196,86 @@ void main() {
     });
   });
 
+  group('adaptive gate (scale-independent)', () {
+    test('a quiet console still corrects a channel a fixed −45 gate would freeze',
+        () {
+      // Real church meters sit far below −45 dB. The old fixed gate froze the
+      // whole band; the relative gate must still engage a channel at −47.
+      final engine = AutoMixEngine(); // reference held by default
+      engine.activate({1: 0.5}); // keys, baseline −10 dB
+      final instrs = _instruments({1: InstrumentType.keys});
+
+      // Seed at −55 (well under the old −45 gate) → balanced, no jump.
+      final seed = engine.update(_meters(active: {1: -55.0}), instrs, preset);
+      expect(seed, isEmpty, reason: 'seed on a quiet channel must not jump');
+
+      // Keys get 8 dB louder → −47, still under −45. A fixed gate would freeze
+      // this; the adaptive gate keeps it in the window and ducks it.
+      double keysFloat = 0.5;
+      var gotCmd = false;
+      for (var i = 0; i < 8; i++) {
+        final cmds = engine.update(_meters(active: {1: -47.0}), instrs, preset);
+        final k = cmds.where((c) => c.ch == 1).firstOrNull;
+        if (k != null) {
+          keysFloat = k.levelFloat;
+          gotCmd = true;
+        }
+      }
+      expect(gotCmd, isTrue,
+          reason: 'a −47 dB channel must be corrected, not frozen');
+      expect(keysFloat, lessThan(0.5),
+          reason: 'the louder input must duck the send');
+    });
+
+    test('a channel far below the loudest stays frozen (relative window)', () {
+      // Hot console: loudest −6 → window floor −46. A −55 dB channel is >40 dB
+      // down, so it reads as bleed/noise and is never opened, even though its
+      // level is nowhere near the target.
+      final engine = AutoMixEngine();
+      engine.activate({1: 0.75, 2: 0.5});
+      final instrs = _instruments(
+          {1: InstrumentType.leadVocal, 2: InstrumentType.backingVocal});
+
+      var touched = false;
+      for (var i = 0; i < 10; i++) {
+        final cmds =
+            engine.update(_meters(active: {1: -6.0, 2: -55.0}), instrs, preset);
+        if (cmds.any((c) => c.ch == 2)) touched = true;
+      }
+      expect(touched, isFalse,
+          reason: 'a channel 49 dB under the loudest must stay frozen');
+    });
+
+    test('a channel parked off (baseline send at 0) is left off, never opened',
+        () {
+      // Regression: with the adaptive gate opening more channels, a channel
+      // whose baseline send is 0.0 (fader off → −90 dB) now clears the gate.
+      // It must be skipped, not crash (ceiling < floor) or get un-muted.
+      final engine = AutoMixEngine();
+      engine.activate({1: 0.75, 2: 0.0}); // ch2 parked fully off
+      final instrs =
+          _instruments({1: InstrumentType.leadVocal, 2: InstrumentType.keys});
+
+      List<SendCommand> cmds = const [];
+      for (var i = 0; i < 10; i++) {
+        cmds = engine.update(_meters(active: {1: -30.0, 2: -48.0}), instrs, preset);
+      }
+      expect(cmds.any((c) => c.ch == 2), isFalse,
+          reason: 'a channel the musician turned off must stay off');
+    });
+
+    test('whole band under the silence floor → no commands', () {
+      final engine = AutoMixEngine();
+      engine.activate({1: 0.75, 2: 0.75});
+      final cmds = engine.update(
+          _meters(active: {1: -70.0, 2: -75.0}),
+          _instruments({1: InstrumentType.leadVocal, 2: InstrumentType.keys}),
+          preset);
+      expect(cmds, isEmpty,
+          reason: 'everything under the −65 floor is noise — nothing opens');
+    });
+  });
+
   group('deadband', () {
     test('an already-balanced channel produces no command', () {
       final engine = AutoMixEngine();

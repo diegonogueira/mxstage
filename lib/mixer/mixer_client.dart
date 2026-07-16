@@ -355,6 +355,8 @@ class MixerClient extends ChangeNotifier {
       meterDb: meterDb,
       refC: _engine.refLevelDb,
       cmds: {for (final c in cmds) c.ch: c.levelFloat},
+      meterFastDb: _meters.displaySnapshot,
+      meterRawDb: _meters.rawSnapshot,
     );
     for (final cmd in cmds) {
       setChannelSend(cmd.ch, cmd.levelFloat);

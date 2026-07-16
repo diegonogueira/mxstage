@@ -103,12 +103,18 @@ class SessionLogger {
     required List<double> meterDb,
     double? refC,
     required Map<int, double> cmds,
+    List<double>? meterFastDb,
+    List<double>? meterRawDb,
   }) {
     _add({
       'type': 'tick',
       't': _ms(),
       if (refC != null) 'C': _r1(refC),
       'm': [for (final v in meterDb) _r1(v)],
+      // Diagnóstico: medidor rápido (barras) e cru (instantâneo) ao lado do
+      // lento `m`. Separa "escala baixa" de "suavização mata o sinal".
+      if (meterFastDb != null) 'mf': [for (final v in meterFastDb) _r1(v)],
+      if (meterRawDb != null) 'mr': [for (final v in meterRawDb) _r1(v)],
       if (cmds.isNotEmpty)
         'cmd': {for (final e in cmds.entries) '${e.key}': _r4(e.value)},
     });

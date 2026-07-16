@@ -14,8 +14,22 @@ class SendCommand {
 
 /// Parameters controlling the correction loop.
 class EngineParams {
-  /// Channels below this (dB) are treated as silent — send frozen, never opened.
-  final double gateDb;
+  /// A channel counts as *silent* (send frozen, never opened) when its level is
+  /// at or below this absolute floor (dB). Set well under any realistic gain
+  /// staging so a conservatively-metered console still counts as "playing" —
+  /// only the true noise / −∞ floor is excluded. Replaces the old fixed −45 dB
+  /// gate, which assumed hot meters and starved the engine on quieter consoles
+  /// (a real church session peaked at ~−30 dB, so almost nothing crossed −45).
+  final double silenceFloorDb;
+
+  /// A channel only participates in the mix if it is within this many dB of the
+  /// loudest channel this tick. This makes the working window **relative** to
+  /// whatever level the console actually produces, so the engine self-calibrates
+  /// across gain-staging setups instead of trusting one absolute threshold. The
+  /// effective per-channel gate each tick is
+  /// `max(loudest − activeRangeDb, silenceFloorDb)`. Think of it as a
+  /// "sensibilidade": larger = more channels ride along.
+  final double activeRangeDb;
 
   /// Ignore send errors smaller than this (dB) — preserves musical dynamics.
   final double deadbandDb;
@@ -44,7 +58,8 @@ class EngineParams {
   final int tickMs;
 
   const EngineParams({
-    this.gateDb = -45.0,
+    this.silenceFloorDb = -65.0,
+    this.activeRangeDb = 40.0,
     this.deadbandDb = 1.0,
     this.maxStepDb = 2.0,
     this.maxBoostDb = 12.0,
@@ -156,20 +171,25 @@ class AutoMixEngine {
 
     final n = min(meterDb.length, 32);
 
-    // Loudest active channel — "o maior volume de toda a mixagem".
+    // Loudest channel above the absolute silence floor — "o maior volume de
+    // toda a mixagem". Anything at/under the floor is noise / not playing.
     double? loudest;
     for (var i = 0; i < n; i++) {
-      if (meterDb[i] > params.gateDb) {
+      if (meterDb[i] > params.silenceFloorDb) {
         loudest = (loudest == null) ? meterDb[i] : max(loudest, meterDb[i]);
       }
     }
-    if (loudest == null) return const []; // all silent — nothing opens
+    if (loudest == null) return const []; // whole band silent — nothing opens
+
+    // Effective gate is *relative* to the loudest channel (so the engine adapts
+    // to the console's gain staging) but never dips below the absolute floor.
+    final effectiveGate = max(loudest - params.activeRangeDb, params.silenceFloorDb);
 
     // Seed the reference on the first active tick (preserves overall loudness so
     // enabling Auto-Mix snaps to balance without a jump); thereafter follow the
     // loudest channel slowly.
     final ref = _refLevelDb == null
-        ? (_refLevelDb = _seedReference(meterDb, instruments, preset, n))
+        ? (_refLevelDb = _seedReference(meterDb, instruments, preset, n, effectiveGate))
         : (_refLevelDb = _refLevelDb! + params.refAlpha * (loudest - _refLevelDb!));
 
     final commands = <SendCommand>[];
@@ -178,8 +198,8 @@ class AutoMixEngine {
       final ch = i + 1;
       final meter = meterDb[i];
 
-      // Gate: channel is silent — freeze send, no correction.
-      if (meter <= params.gateDb) continue;
+      // Gate: channel is silent / below the relative window — freeze, no fix.
+      if (meter <= effectiveGate) continue;
 
       final instrument =
           i < instruments.length ? instruments[i] : InstrumentType.unknown;
@@ -192,6 +212,13 @@ class AutoMixEngine {
       // Safety bounds: duck freely, cap boost above baseline, absolute limits.
       final baseline = _refSendDb[ch] ?? _currentSendDb[ch] ?? params.sendFloorDb;
       final ceiling = min(params.sendCeilingDb, baseline + params.maxBoostDb);
+
+      // A channel parked below the usable floor (its send fader is effectively
+      // off) has no valid range to write into — leave it off. Auto-Mix holds the
+      // balance of what's already in the monitor; it never un-mutes a channel
+      // the musician pulled down. (Also guards clamp() against ceiling < floor.)
+      if (ceiling < params.sendFloorDb) continue;
+
       sendTarget = sendTarget.clamp(params.sendFloorDb, ceiling);
 
       final current = _currentSendDb[ch] ?? baseline;
@@ -220,16 +247,20 @@ class AutoMixEngine {
     List<InstrumentType> instruments,
     GenrePreset preset,
     int n,
+    double effectiveGate,
   ) {
     final candidates = <double>[];
     for (var i = 0; i < n; i++) {
       final meter = meterDb[i];
-      if (meter <= params.gateDb) continue;
+      if (meter <= effectiveGate) continue;
       final ch = i + 1;
+      final baseline = _refSendDb[ch] ?? 0.0;
+      // A channel parked off carries no balance information — leaving it in
+      // would drag C toward a −90 dB outlier and skew everyone's target.
+      if (baseline <= params.sendFloorDb) continue;
       final instrument =
           i < instruments.length ? instruments[i] : InstrumentType.unknown;
       final targetRel = preset.targetFor(instrument) + (boostDb[ch] ?? 0.0);
-      final baseline = _refSendDb[ch] ?? 0.0;
       candidates.add(meter + baseline - targetRel);
     }
     if (candidates.isEmpty) return meterDb.isEmpty ? 0.0 : meterDb[0];

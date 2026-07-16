@@ -202,10 +202,22 @@ class _Replay {
     _engine.update(meter, _instruments, kGenrePresets[_genreSel]!);
     final sends = _engine.currentSendFloats; // ch → float
 
+    // Mesmo gate adaptativo do engine: relativo ao canal mais alto, com piso
+    // absoluto de silêncio.
+    double? loudest;
+    for (var i = 0; i < meter.length && i < 32; i++) {
+      if (meter[i] > _params.silenceFloorDb) {
+        loudest = (loudest == null) ? meter[i] : max(loudest, meter[i]);
+      }
+    }
+    final effectiveGate = loudest == null
+        ? _params.silenceFloorDb
+        : max(loudest - _params.activeRangeDb, _params.silenceFloorDb);
+
     for (var i = 0; i < meter.length && i < 32; i++) {
       final ch = i + 1;
       final m = meter[i];
-      if (m <= _params.gateDb) continue; // silêncio — engine congela
+      if (m <= effectiveGate) continue; // silêncio / fora da janela — congela
       final st = _stats.putIfAbsent(ch, () => _ChStat());
       st.ticksActive++;
       st.meterMin = min(st.meterMin, m);
