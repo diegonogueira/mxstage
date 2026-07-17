@@ -38,13 +38,52 @@ class EngineParams {
   final double maxStepDb;
 
   /// Max send increase above a channel's baseline (dB). Ducking is unbounded
-  /// (always safe); *boosting* a quiet channel is capped so we never amplify
-  /// noise / bleed on a near-silent input.
+  /// (always safe); *boosting* a quiet channel is capped. On in-ear / headphone
+  /// monitoring (fones) there is no acoustic path back to the mics, so this is
+  /// generous (24) — a source that drops a lot is brought most of the way back
+  /// to its style target ("jogar no talo"). The remaining guard against
+  /// amplifying hiss / mic bleed on a *near-silent* input is [boostRampDb], not
+  /// this hard cap. For stage wedges / PA (feedback path present) drop this back
+  /// to ~9–12 and the ceiling to 0.
   final double maxBoostDb;
 
-  /// Absolute send floor / ceiling (dB), applied after per-channel bounds.
+  /// Adaptive-boost guard (dB above [silenceFloorDb]). The boost allowance
+  /// ramps from 0 (channel sitting on the noise floor) up to the full
+  /// [maxBoostDb] once the channel is this many dB above the floor. A
+  /// clearly-playing source is pushed all the way to target while a near-silent
+  /// one is held back — we never crank a channel's hiss / bleed into the ears
+  /// just because it went quiet.
+  final double boostRampDb;
+
+  /// Absolute send floor / ceiling (dB), applied after per-channel bounds. The
+  /// ceiling is +10 (the X32 send maximum) for in-ear monitoring — no feedback
+  /// path, so pushing to the style target is safe. Lower it toward 0 (unity)
+  /// before ever driving a stage wedge / PA.
   final double sendFloorDb;
   final double sendCeilingDb;
+
+  /// Max downward shift of the whole mix (dB) to keep the loudest-target channel
+  /// (normally the lead vocal) on top. When that channel's input drops so far
+  /// that even the send ceiling can't boost it to target, boosting the *others*
+  /// to their targets would bury it — so instead the reference ducks by the
+  /// shortfall and the whole band comes down together, preserving the style
+  /// balance ("cortar o resto quando não dá pra subir a estrela"). Bounded so one
+  /// near-silent source can't nuke the mix — past this the star just sits capped.
+  final double maxDuckDb;
+
+  /// Robust-seed guard. The instant Auto-Mix is enabled the meters may not yet
+  /// represent the playing band — a console/UI default level before the music
+  /// really comes in shows up as an implausibly *uniform* picture (every channel
+  /// at nearly the same level). Locking the reference C there seeds a bad balance
+  /// that starves the whole mix (everyone wants huge boost, caps, "some"). So the
+  /// seed is **deferred** while at least [seedMinChannels] channels are active but
+  /// their spread (loudest − quietest active) is under [seedMinSpreadDb] — no real
+  /// band is that flat. Give up and seed anyway after [seedMaxWarmupTicks] ticks
+  /// so it never stalls. Fewer than [seedMinChannels] active ⇒ seed immediately
+  /// (a solo/duo has no meaningful spread to judge).
+  final int seedMinChannels;
+  final double seedMinSpreadDb;
+  final int seedMaxWarmupTicks;
 
   /// Time constant (seconds) for the reference level C to follow the loudest
   /// channel. The default is effectively infinite → C stays **fixed** (holds
@@ -61,10 +100,15 @@ class EngineParams {
     this.silenceFloorDb = -65.0,
     this.activeRangeDb = 40.0,
     this.deadbandDb = 1.0,
-    this.maxStepDb = 2.0,
-    this.maxBoostDb = 12.0,
+    this.maxStepDb = 4.0,
+    this.maxBoostDb = 24.0,
+    this.boostRampDb = 25.0,
     this.sendFloorDb = -60.0,
-    this.sendCeilingDb = 0.0,
+    this.sendCeilingDb = 10.0,
+    this.maxDuckDb = 12.0,
+    this.seedMinChannels = 3,
+    this.seedMinSpreadDb = 5.0,
+    this.seedMaxWarmupTicks = 15,
     this.refFollowSeconds = 1e12, // hold the reference fixed by default
     this.tickMs = 1000,
   });
@@ -111,8 +155,12 @@ class AutoMixEngine {
   // Current send levels tracked by the engine (dB).
   final Map<int, double> _currentSendDb = {};
 
-  // Slow reference level C (dB). Null until seeded on the first active tick.
+  // Slow reference level C (dB). Null until seeded (deferred past a flat/pre-band
+  // meter picture — see [_seedIsRepresentative]).
   double? _refLevelDb;
+
+  // Ticks spent waiting for a representative meter picture before seeding C.
+  int _seedWarmupTicks = 0;
 
   /// Referência lenta C (dB) do último tick, ou null antes do primeiro tick
   /// ativo. Só para diagnóstico/log — não afeta a correção.
@@ -131,7 +179,8 @@ class AutoMixEngine {
   void activate(Map<int, double> currentSendFloats) {
     _refSendDb.clear();
     _currentSendDb.clear();
-    _refLevelDb = null; // re-seed on the next update tick
+    _refLevelDb = null; // re-seed on the next representative tick
+    _seedWarmupTicks = 0;
     for (final entry in currentSendFloats.entries) {
       final db = floatToDb(entry.value);
       _refSendDb[entry.key] = db;
@@ -185,12 +234,45 @@ class AutoMixEngine {
     // to the console's gain staging) but never dips below the absolute floor.
     final effectiveGate = max(loudest - params.activeRangeDb, params.silenceFloorDb);
 
-    // Seed the reference on the first active tick (preserves overall loudness so
-    // enabling Auto-Mix snaps to balance without a jump); thereafter follow the
-    // loudest channel slowly.
+    // Seed the reference once the meter picture is representative (preserves
+    // overall loudness so enabling Auto-Mix snaps to balance without a jump);
+    // thereafter follow the loudest channel slowly. Deferring the seed past a
+    // flat/pre-band picture avoids locking a bad C that starves the whole mix.
+    if (_refLevelDb == null && !_seedIsRepresentative(meterDb, n, effectiveGate)) {
+      return const []; // warming up — hold, don't seed on non-band levels yet
+    }
     final ref = _refLevelDb == null
         ? (_refLevelDb = _seedReference(meterDb, instruments, preset, n, effectiveGate))
         : (_refLevelDb = _refLevelDb! + params.refAlpha * (loudest - _refLevelDb!));
+
+    // Keep the star on top. The channel with the highest target (normally the
+    // lead vocal) is meant to sit at the top of the mix. If its input drops so
+    // far that even the +[sendCeilingDb] send can't lift it to target, boosting
+    // the others to *their* targets would bury it. Instead, duck the whole
+    // reference by that shortfall so the band comes down together and the balance
+    // (star on top) is preserved. Only a clearly-playing channel may anchor — we
+    // won't duck the band to chase a near-silent input — and the shift is bounded
+    // by [maxDuckDb]. `_refLevelDb` keeps the un-ducked C (seed/log continuity).
+    var duck = 0.0;
+    var anchorTargetRel = -1e9;
+    for (var i = 0; i < n; i++) {
+      final meter = meterDb[i];
+      if (meter <= effectiveGate) continue;
+      if (meter - params.silenceFloorDb < params.boostRampDb) continue;
+      final instrument =
+          i < instruments.length ? instruments[i] : InstrumentType.unknown;
+      final targetRel = preset.targetFor(instrument) + (boostDb[i + 1] ?? 0.0);
+      final desired = ref + masterDb + targetRel - meter;
+      final deficit =
+          (desired - params.sendCeilingDb).clamp(0.0, params.maxDuckDb).toDouble();
+      if (targetRel > anchorTargetRel) {
+        anchorTargetRel = targetRel;
+        duck = deficit;
+      } else if (targetRel == anchorTargetRel && deficit > duck) {
+        duck = deficit;
+      }
+    }
+    final effectiveRef = ref - duck;
 
     final commands = <SendCommand>[];
 
@@ -207,11 +289,20 @@ class AutoMixEngine {
 
       // Compensation: send needed so this channel sits at its target monitor
       // level. Louder meter → lower send; quieter meter → higher send.
-      var sendTarget = ref + masterDb + targetRel - meter;
+      // [effectiveRef] folds in the keep-the-star-on-top duck.
+      var sendTarget = effectiveRef + masterDb + targetRel - meter;
 
-      // Safety bounds: duck freely, cap boost above baseline, absolute limits.
+      // Safety bounds: duck freely; boost is bounded per channel and absolutely.
       final baseline = _refSendDb[ch] ?? _currentSendDb[ch] ?? params.sendFloorDb;
-      final ceiling = min(params.sendCeilingDb, baseline + params.maxBoostDb);
+      // Adaptive boost allowance: full [maxBoostDb] once the channel sits well
+      // above the noise floor, tapering to 0 near it — a source that's genuinely
+      // playing is pushed to its target, but a near-silent one isn't amplified
+      // into hiss / bleed (the only boost hazard left once there's no feedback
+      // path on in-ear monitoring).
+      final aboveFloor = meter - params.silenceFloorDb;
+      final boostFrac = (aboveFloor / params.boostRampDb).clamp(0.0, 1.0);
+      final ceiling =
+          min(params.sendCeilingDb, baseline + params.maxBoostDb * boostFrac);
 
       // A channel parked below the usable floor (its send fader is effectively
       // off) has no valid range to write into — leave it off. Auto-Mix holds the
@@ -236,6 +327,28 @@ class AutoMixEngine {
     }
 
     return commands;
+  }
+
+  /// True once the meter picture looks like a real playing band, so it's safe to
+  /// seed C. A still-settling or pre-band console default shows up as an
+  /// implausibly flat picture — many active channels at nearly the same level —
+  /// which would seed a bad reference and starve the mix. Fewer than
+  /// [EngineParams.seedMinChannels] active channels ⇒ representative (a solo/duo
+  /// has no meaningful spread). Gives up and seeds anyway after
+  /// [EngineParams.seedMaxWarmupTicks] so it never stalls.
+  bool _seedIsRepresentative(List<double> meterDb, int n, double gate) {
+    _seedWarmupTicks++;
+    if (_seedWarmupTicks >= params.seedMaxWarmupTicks) return true;
+    var lo = double.infinity, hi = double.negativeInfinity, count = 0;
+    for (var i = 0; i < n; i++) {
+      if (meterDb[i] > gate) {
+        count++;
+        lo = min(lo, meterDb[i]);
+        hi = max(hi, meterDb[i]);
+      }
+    }
+    if (count < params.seedMinChannels) return true;
+    return (hi - lo) >= params.seedMinSpreadDb;
   }
 
   /// Choose the reference level C so the *current* sends are preserved as

@@ -767,11 +767,18 @@ const _kIndexHtml = r'''<!DOCTYPE html>
       if (faders[i] && !faders[i].disabled) send({ type: "set", ch: i + 1, level: faderVal[i] });
     }
   }
-  // RMS do sinal pós-fader → 0..1 (mapeando -50..0 dBFS).
-  function rms01(an) {
+  // RMS do sinal pós-fader → AMPLITUDE LINEAR (0..1). É o que o app espera: o
+  // MeterStream faz 20·log10(amplitude). Mandar dB já normalizado ((db+50)/50)
+  // seria relido como amplitude no app (duplo-log) → comprime a escala ~3.4× e o
+  // Auto-Mix "não vê" o quanto o instrumento sobe/desce (o retorno mal mexe).
+  function rmsLin(an) {
     an.getFloatTimeDomainData(tdbuf);
     var s = 0; for (var i = 0; i < tdbuf.length; i++) { s += tdbuf[i] * tdbuf[i]; }
-    var db = 20 * Math.log10(Math.sqrt(s / tdbuf.length) + 1e-6);
+    return Math.min(1, Math.sqrt(s / tdbuf.length)); // amplitude linear
+  }
+  // Altura da barra: escala em dB (-50..0 dBFS → 0..1), só pra visual legível.
+  function barPct(lin) {
+    var db = 20 * Math.log10(lin + 1e-6);
     return Math.max(0, Math.min(1, (db + 50) / 50));
   }
   function startMetering() {
@@ -780,10 +787,10 @@ const _kIndexHtml = r'''<!DOCTYPE html>
       if (!playing || !actx) return;
       var levels = {};
       Object.keys(analyser).forEach(function (ch) {
-        var lv = rms01(analyser[ch]);
-        levels[ch] = lv;
+        var lv = rmsLin(analyser[ch]);
+        levels[ch] = lv;                    // amplitude linear → app (engine)
         var i = ch - 1;
-        if (fills[i]) fills[i].style.height = Math.round(lv * 100) + "%";
+        if (fills[i]) fills[i].style.height = Math.round(barPct(lv) * 100) + "%"; // dB → barra
       });
       send({ type: "meters", levels: levels });
     }, 90);

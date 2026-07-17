@@ -132,6 +132,119 @@ void main() {
       expect(ch2Db, greaterThan(-9.0),
           reason: 'it should have boosted up from the -10 dB baseline');
     });
+
+    test('in-ear headroom: a source that drops far is boosted back toward target',
+        () {
+      // Fones (no feedback path): the default config has a +10 dB ceiling and a
+      // generous boost, so a vocal that drops 20 dB is pushed back to its target
+      // instead of staying "nitidamente baixa". The old 0 dB ceiling / 12 dB cap
+      // could only recover half of this.
+      final engine = AutoMixEngine(); // default fones tuning
+      engine.activate({1: 0.5}); // lead vocal, baseline -10 dB
+      final instrs = _instruments({1: InstrumentType.leadVocal});
+
+      // Seed balanced at -10 → monitor -20 (send -10). Then the singer drops
+      // 20 dB to -30; the engine must boost the send well past unity.
+      engine.update(_meters(active: {1: -10.0}), instrs, preset);
+
+      double sendFloat = 0.5;
+      for (var i = 0; i < 12; i++) {
+        final cmds = engine.update(_meters(active: {1: -30.0}), instrs, preset);
+        final c = cmds.where((c) => c.ch == 1).firstOrNull;
+        if (c != null) sendFloat = c.levelFloat;
+      }
+
+      final sendDb = floatToDb(sendFloat);
+      expect(sendDb, greaterThan(2.0),
+          reason: 'send must climb past the old 0 dB ceiling (in-ear headroom)');
+      final monitorDb = -30.0 + sendDb;
+      expect(monitorDb, closeTo(-20.0, 2.0),
+          reason: 'the dropped vocal is brought back to its seeded target');
+    });
+  });
+
+  group('keep the star on top', () {
+    test('vocal capped at the ceiling → the band ducks to stay under it', () {
+      // The user's screenshot case: the singer drops so far that even the +10 dB
+      // ceiling can't lift the vocal to target. Boosting everyone else to *their*
+      // targets would bury the vocal — instead the whole band ducks so the vocal
+      // stays on top and the style balance holds.
+      final engine = AutoMixEngine(); // default fones tuning
+      final gTarget = preset.targetFor(InstrumentType.guitar); // gospel: -9 dB
+      // Balanced start: vocal -10 / guitar -19 (gTarget below), sends -10 dB.
+      engine.activate({1: dbToFloat(-10.0), 5: dbToFloat(-10.0)});
+      final instrs =
+          _instruments({1: InstrumentType.leadVocal, 5: InstrumentType.guitar});
+      engine.update(
+          _meters(active: {1: -10.0, 5: -10.0 + gTarget}), instrs, preset);
+
+      // Singer collapses to -35 (needs > +10 dB send → caps); guitar cranks up.
+      double vSend = dbToFloat(-10.0), gSend = dbToFloat(-10.0);
+      for (var i = 0; i < 100; i++) {
+        final cmds =
+            engine.update(_meters(active: {1: -35.0, 5: 0.0}), instrs, preset);
+        for (final c in cmds) {
+          if (c.ch == 1) vSend = c.levelFloat;
+          if (c.ch == 5) gSend = c.levelFloat;
+        }
+      }
+
+      final vMon = -35.0 + floatToDb(vSend);
+      final gMon = 0.0 + floatToDb(gSend);
+      expect(floatToDb(vSend), closeTo(10.0, 1.0),
+          reason: 'the starved vocal rides the +10 dB ceiling');
+      expect(vMon - gMon, closeTo(-gTarget, 2.0),
+          reason: 'the band ducked so the guitar stays ~${-gTarget} dB under the '
+              'vocal (style balance kept, vocal not buried)');
+    });
+  });
+
+  group('robust seed (ignore a non-representative meter picture)', () {
+    test('holds instead of seeding on a flat pre-band picture, seeds on spread',
+        () {
+      // The real-log failure: Auto-Mix was enabled before the band was really
+      // playing, so every channel read the same (console/UI default) level. C
+      // locked too high and the whole mix starved. The engine must WAIT.
+      final engine = AutoMixEngine();
+      engine.activate({
+        1: dbToFloat(-10.0), 5: dbToFloat(-10.0), 7: dbToFloat(-10.0),
+        13: dbToFloat(-10.0), 15: dbToFloat(-10.0),
+      });
+      final instrs = _instruments({
+        1: InstrumentType.leadVocal, 5: InstrumentType.guitar,
+        7: InstrumentType.bass, 13: InstrumentType.kick,
+        15: InstrumentType.hihat,
+      });
+
+      // Pre-band: five active channels, all at the same level (flat) → hold.
+      for (var i = 0; i < 4; i++) {
+        final cmds = engine.update(
+            _meters(active: {1: -6.0, 5: -6.0, 7: -6.0, 13: -6.0, 15: -6.0}),
+            instrs, preset);
+        expect(cmds, isEmpty, reason: 'flat picture → hold, do not correct');
+      }
+      expect(engine.refLevelDb, isNull,
+          reason: 'C must not lock on a flat pre-band picture');
+
+      // Band comes in with a real spread → now it seeds and balances.
+      double vSend = dbToFloat(-10.0), gSend = dbToFloat(-10.0);
+      for (var i = 0; i < 60; i++) {
+        final cmds = engine.update(
+            _meters(active: {1: -25.0, 5: -22.0, 7: -19.0, 13: -30.0, 15: -20.0}),
+            instrs, preset);
+        for (final c in cmds) {
+          if (c.ch == 1) vSend = c.levelFloat;
+          if (c.ch == 5) gSend = c.levelFloat;
+        }
+      }
+      expect(engine.refLevelDb, isNotNull, reason: 'real spread → seeds');
+      final vMon = -25.0 + floatToDb(vSend);
+      final gMon = -22.0 + floatToDb(gSend);
+      final gTarget = preset.targetFor(InstrumentType.guitar);
+      expect(vMon - gMon, closeTo(-gTarget, 2.5),
+          reason: 'seeded on real levels → guitar sits ~$gTarget dB under the '
+              'vocal (not starved by a bad early seed)');
+    });
   });
 
   group('reference holds by default', () {

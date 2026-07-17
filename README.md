@@ -72,6 +72,24 @@ tools/          # x32_sim.dart + probe.dart
 test/           # testes unitários
 ```
 
+## Auto-Mix (como funciona)
+
+O Auto-Mix age como um operador atento: mantém **cada instrumento/voz no nível
+certo pro estilo**, corrigindo sozinho quando alguém sobe ou desce demais. Se a
+voz cai, ele levanta; se a guitarra estoura, ele corta — sempre buscando o balanço
+do estilo escolhido (Rock realça guitarra/bateria, Jazz realça sax/pratos, etc.).
+
+O balanço-alvo é o perfil neutro relativo à voz (`kBaseProfile`) temperado pelo
+estilo (`kGenreDeltas`) — ver `lib/state/genre_presets.dart`. Ao ligar, ele
+fotografa o balanço atual e o segura; o "volume geral" desloca o monitor todo sem
+mexer no equilíbrio entre canais.
+
+**Ajustado para fones (IEM / headphone).** Como não há microfonia em fone, o motor
+pode ir fundo pra atingir o alvo — teto de send +10 dB e correção rápida — com uma
+guarda adaptativa que evita amplificar o chiado de um canal em silêncio. **Ainda
+não é seguro pra PA nem caixa de retorno de palco (wedge)** (risco de microfonia):
+lá os limites precisam ser reduzidos primeiro — ver *Auto-Mix Engine* no `CLAUDE.md`.
+
 ## Modos: Stage e Live
 
 O app abre direto na descoberta da mesa. No seletor de bus, além dos monitores,
