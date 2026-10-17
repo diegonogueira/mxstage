@@ -98,11 +98,13 @@ void main() {
       }
 
       final sendDb = floatToDb(sendFloat);
-      expect(sendDb, closeTo(-6.0, 1.0),
+      // Tolerance reflects the 2 dB deadband: the send settles within a deadband
+      // of the ideal −6 (it can stop one slew step short by design).
+      expect(sendDb, closeTo(-6.0, 2.5),
           reason: 'send must drop ~6 dB to cancel the +6 dB input');
       final monitorDb = -14.0 + sendDb;
-      expect(monitorDb, closeTo(-20.0, 1.5),
-          reason: 'monitor level should stay on target');
+      expect(monitorDb, closeTo(-20.0, 2.5),
+          reason: 'monitor level should stay on target (within the deadband)');
     });
   });
 
@@ -144,11 +146,12 @@ void main() {
       final instrs = _instruments({1: InstrumentType.leadVocal});
 
       // Seed balanced at -10 → monitor -20 (send -10). Then the singer drops
-      // 20 dB to -30; the engine must boost the send well past unity.
+      // 20 dB to -30; the engine must boost the send well past unity. Recovery is
+      // deliberately slow now (maxBoostStepDb), so give it enough ticks to settle.
       engine.update(_meters(active: {1: -10.0}), instrs, preset);
 
       double sendFloat = 0.5;
-      for (var i = 0; i < 12; i++) {
+      for (var i = 0; i < 40; i++) {
         final cmds = engine.update(_meters(active: {1: -30.0}), instrs, preset);
         final c = cmds.where((c) => c.ch == 1).firstOrNull;
         if (c != null) sendFloat = c.levelFloat;
@@ -191,9 +194,10 @@ void main() {
 
       final vMon = -35.0 + floatToDb(vSend);
       final gMon = 0.0 + floatToDb(gSend);
-      expect(floatToDb(vSend), closeTo(10.0, 1.0),
-          reason: 'the starved vocal rides the +10 dB ceiling');
-      expect(vMon - gMon, closeTo(-gTarget, 2.0),
+      // Within a deadband of the +10 ceiling — the slow boost settles just under it.
+      expect(floatToDb(vSend), closeTo(10.0, 2.5),
+          reason: 'the starved vocal rides near the +10 dB ceiling');
+      expect(vMon - gMon, closeTo(-gTarget, 3.0),
           reason: 'the band ducked so the guitar stays ~${-gTarget} dB under the '
               'vocal (style balance kept, vocal not buried)');
     });
@@ -244,6 +248,136 @@ void main() {
       expect(vMon - gMon, closeTo(-gTarget, 2.5),
           reason: 'seeded on real levels → guitar sits ~$gTarget dB under the '
               'vocal (not starved by a bad early seed)');
+    });
+  });
+
+  group('volume geral (master) shifts the monitor', () {
+    // Reproduce the sim-log scenario: the lead vocal (star) is driven into the
+    // +10 send ceiling by a low meter, so the keep-the-star duck is active. In
+    // the old code the duck included master and cancelled it (master 10 vs 0 gave
+    // identical sends). Fixed engine (no follow) so C stays where seeded.
+    AutoMixEngine cappedStarEngine() {
+      final engine = AutoMixEngine(params: _frozenRef);
+      engine.activate({1: 0.75, 5: 0.75}); // vocal, guitar — baseline 0 dB
+      final instrs = _instruments(
+          {1: InstrumentType.leadVocal, 5: InstrumentType.guitar});
+      // Seed with a hot vocal (C ≈ −8), then the vocal drops to −22 and caps.
+      engine.update(_meters(active: {1: -8.0, 5: -20.0}), instrs, preset);
+      for (var i = 0; i < 20; i++) {
+        engine.update(_meters(active: {1: -22.0, 5: -20.0}), instrs, preset);
+      }
+      return engine;
+    }
+
+    final instrs =
+        _instruments({1: InstrumentType.leadVocal, 5: InstrumentType.guitar});
+    final capMeters = _meters(active: {1: -22.0, 5: -20.0});
+
+    double settle(AutoMixEngine e, int ch, {int ticks = 20}) {
+      double last = 0.0;
+      for (var i = 0; i < ticks; i++) {
+        final cmds = e.update(capMeters, instrs, preset);
+        final c = cmds.where((x) => x.ch == ch).firstOrNull;
+        if (c != null) last = floatToDb(c.levelFloat);
+      }
+      // If no command this run, read the tracked level.
+      final f = e.currentSendFloats[ch];
+      return f != null ? floatToDb(f) : last;
+    }
+
+    test('lowering master lowers the band — the duck no longer cancels it', () {
+      final engine = cappedStarEngine();
+      final guitarAt0 = settle(engine, 5);
+
+      engine.masterDb = -6.0;
+      final guitarAtMinus6 = settle(engine, 5);
+
+      expect(guitarAtMinus6, lessThan(guitarAt0 - 4.0),
+          reason: 'master −6 must actually pull the band down (~6 dB), not be '
+              'absorbed by the keep-the-star duck');
+    });
+
+    test('a master change applies instantly, not slewed in over many ticks', () {
+      final engine = cappedStarEngine();
+      final guitarAt0 = settle(engine, 5);
+
+      engine.masterDb = -6.0;
+      // A single tick: the instant apply must move it most of the way, unlike the
+      // 0.75–2 dB/s slew which would move only ~2 dB in one tick.
+      final cmds = engine.update(capMeters, instrs, preset);
+      final g = cmds.where((c) => c.ch == 5).firstOrNull;
+      final guitarAfter1Tick = g != null
+          ? floatToDb(g.levelFloat)
+          : floatToDb(engine.currentSendFloats[5]!);
+
+      expect(guitarAfter1Tick, lessThan(guitarAt0 - 4.0),
+          reason: 'the knob must respond now (instant), not crawl in at the slew');
+    });
+
+    test('raising master stops at the star ceiling — it never buries the star', () {
+      // Star NOT initially capped: it has ~1 dB of headroom. Cranking master to
+      // +12 must lift the band only until the vocal hits the ceiling, then stop —
+      // the guitar rises ~1 dB, not +12, so the vocal stays on top.
+      final engine = AutoMixEngine(params: _frozenRef);
+      engine.activate({1: 0.75, 5: 0.75});
+      final meters = _meters(active: {1: -15.0, 5: -15.0});
+      for (var i = 0; i < 20; i++) {
+        engine.update(meters, instrs, preset);
+      }
+      final gBefore = floatToDb(engine.currentSendFloats[5]!);
+
+      engine.masterDb = 12.0;
+      double vSend = 0, gSend = 0;
+      for (var i = 0; i < 20; i++) {
+        engine.update(meters, instrs, preset);
+      }
+      vSend = floatToDb(engine.currentSendFloats[1]!);
+      gSend = floatToDb(engine.currentSendFloats[5]!);
+
+      expect(vSend, closeTo(10.0, 1.5),
+          reason: 'the vocal rides up to the +10 ceiling');
+      expect(gSend, lessThan(gBefore + 2.5),
+          reason: 'the guitar only rose ~1 dB (star headroom), not +12 — not buried');
+      final vMon = -15.0 + vSend, gMon = -15.0 + gSend;
+      final gTarget = preset.targetFor(InstrumentType.guitar); // gospel −9
+      expect(vMon - gMon, closeTo(-gTarget, 2.5),
+          reason: 'balance preserved: vocal stays ~${-gTarget} dB over the guitar');
+    });
+  });
+
+  group('seed anchor (ignore near-silent channels)', () {
+    test('a few channels sitting on the floor do not drag the seed low', () {
+      // The real church log: at activation only five channels cleared the gate,
+      // and THREE of them sat just above the −65 silence floor (bleed / a
+      // barely-open mic). Their candidates dragged the plain median ~22 dB below
+      // the two channels actually carrying the mix, so C locked far too low and
+      // the whole monitor was starved (musician forced to max the headphone box).
+      // The seed must anchor on the loud channels and ignore the near-floor ones.
+      final engine = AutoMixEngine();
+      engine.activate({
+        1: dbToFloat(-9.0), // lead vocal, really playing
+        2: dbToFloat(-9.0), // bass, really playing
+        7: dbToFloat(-25.0), 8: dbToFloat(-25.0), 9: dbToFloat(-25.0), // on floor
+      });
+      final instrs = _instruments({
+        1: InstrumentType.leadVocal, 2: InstrumentType.bass,
+        7: InstrumentType.overhead, 8: InstrumentType.overhead,
+        9: InstrumentType.overhead,
+      });
+
+      // Two loud channels (~−37) + three sitting just above the −65 floor.
+      engine.update(
+          _meters(active: {1: -37.0, 2: -38.0, 7: -60.0, 8: -61.0, 9: -62.0}),
+          instrs, preset);
+
+      // Anchored on the real band (~−38/−46), NOT on the −60s that would pull a
+      // plain median down toward −68.
+      expect(engine.refLevelDb, isNotNull);
+      expect(engine.refLevelDb!, greaterThan(-52.0),
+          reason: 'seed must not be dragged toward the floor by near-silent '
+              'channels (would starve the whole monitor)');
+      expect(engine.refLevelDb!, lessThan(-30.0),
+          reason: 'seed still reflects the band, not an outlier-high anchor');
     });
   });
 
@@ -303,9 +437,10 @@ void main() {
       }
 
       // Balance unchanged → sends settle back near their baseline (0 dB / 0.75):
-      // the monitor followed the band up instead of ducking anyone.
-      expect(floatToDb(vocalFloat), closeTo(0.0, 1.5));
-      expect(floatToDb(keysFloat), closeTo(0.0, 1.5));
+      // the monitor followed the band up instead of ducking anyone. Tolerance
+      // covers the 2 dB deadband.
+      expect(floatToDb(vocalFloat), closeTo(0.0, 2.5));
+      expect(floatToDb(keysFloat), closeTo(0.0, 2.5));
     });
   });
 

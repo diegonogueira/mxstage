@@ -31,11 +31,27 @@ class EngineParams {
   /// "sensibilidade": larger = more channels ride along.
   final double activeRangeDb;
 
-  /// Ignore send errors smaller than this (dB) — preserves musical dynamics.
+  /// Ignore send errors smaller than this (dB) — preserves musical dynamics and
+  /// suppresses churn. Bumped from 1 dB after a real church log showed every
+  /// channel oscillating tens of dB tick-to-tick ("sobe e some toda hora"): a
+  /// wider deadband lets phrase-level dynamics pass without a correction.
   final double deadbandDb;
 
-  /// Max send change per correction tick (dB) — slew limiter.
+  /// Max **downward** (duck) send change per correction tick (dB) — the slew
+  /// limiter when a source got louder and must come down. Kept moderately fast
+  /// so a sustained surge is tamed in a few seconds, but no longer the old
+  /// aggressive 4 dB/s that made the whole mix pump. See [maxBoostStepDb] for the
+  /// (deliberately slower) upward rate.
   final double maxStepDb;
+
+  /// Max **upward** (boost/fill) send change per correction tick (dB). Much
+  /// slower than the duck rate: when a source goes quiet we must NOT rush the
+  /// send up to fill the gap — a musical rest or a phrase end would get pumped
+  /// back in and then ducked again the moment the musician plays. Slow boost lets
+  /// short gaps pass untouched while a genuinely sustained drop still recovers,
+  /// just gently. This asymmetry (fast-ish down, slow up) is the main cure for
+  /// the tick-to-tick pumping seen in the field logs.
+  final double maxBoostStepDb;
 
   /// Max send increase above a channel's baseline (dB). Ducking is unbounded
   /// (always safe); *boosting* a quiet channel is capped. On in-ear / headphone
@@ -85,6 +101,18 @@ class EngineParams {
   final double seedMinSpreadDb;
   final int seedMaxWarmupTicks;
 
+  /// How far below the loudest channel a channel may sit and still **anchor the
+  /// seed reference C** (dB). Tighter than the participation gate ([activeRangeDb]
+  /// = 40): a channel can *ride along* in the mix from 40 dB down, but only
+  /// channels within this much of the loudest define the seed level. A real log
+  /// showed the seed median dragged ~22 dB too low by three channels sitting just
+  /// above the silence floor (bleed / a barely-open vocal) that cleared the wide
+  /// gate; anchoring C on them starved the whole monitor (everything too quiet,
+  /// musician forced to max the headphone box). Restricting the anchor to the
+  /// channels actually carrying the mix seeds C where the band really is. Relative
+  /// to the loudest, so it stays scale-independent across consoles.
+  final double seedAnchorRangeDb;
+
   /// Time constant (seconds) for the reference level C to follow the loudest
   /// channel. The default is effectively infinite → C stays **fixed** (holds
   /// the balance the musician set; a uniform whole-band rise is ducked, not
@@ -99,8 +127,9 @@ class EngineParams {
   const EngineParams({
     this.silenceFloorDb = -65.0,
     this.activeRangeDb = 40.0,
-    this.deadbandDb = 1.0,
-    this.maxStepDb = 4.0,
+    this.deadbandDb = 2.0,
+    this.maxStepDb = 2.0,
+    this.maxBoostStepDb = 0.75,
     this.maxBoostDb = 24.0,
     this.boostRampDb = 25.0,
     this.sendFloorDb = -60.0,
@@ -109,6 +138,7 @@ class EngineParams {
     this.seedMinChannels = 3,
     this.seedMinSpreadDb = 5.0,
     this.seedMaxWarmupTicks = 15,
+    this.seedAnchorRangeDb = 20.0,
     this.refFollowSeconds = 1e12, // hold the reference fixed by default
     this.tickMs = 1000,
   });
@@ -174,6 +204,15 @@ class AutoMixEngine {
   // level seeded at activation.
   double masterDb = 0.0;
 
+  // Effective master (dB) currently baked into [_currentSendDb] — [masterDb]
+  // bounded by the star's headroom to the ceiling (see [update]). A change is
+  // applied *instantly* (a knob move is a deliberate user action, not drift to
+  // slew in). [_masterSynced] guards the first tick after activation: it adopts
+  // the current effective master without a jump (it ramps in through the slew,
+  // like any other correction).
+  double _appliedMasterEff = 0.0;
+  bool _masterSynced = false;
+
   /// Activate with the current send levels as the baseline.
   /// [currentSendFloats]: map of ch (1-based) → current fader float (0..1).
   void activate(Map<int, double> currentSendFloats) {
@@ -181,6 +220,8 @@ class AutoMixEngine {
     _currentSendDb.clear();
     _refLevelDb = null; // re-seed on the next representative tick
     _seedWarmupTicks = 0;
+    _appliedMasterEff = 0.0;
+    _masterSynced = false;
     for (final entry in currentSendFloats.entries) {
       final db = floatToDb(entry.value);
       _refSendDb[entry.key] = db;
@@ -242,7 +283,8 @@ class AutoMixEngine {
       return const []; // warming up — hold, don't seed on non-band levels yet
     }
     final ref = _refLevelDb == null
-        ? (_refLevelDb = _seedReference(meterDb, instruments, preset, n, effectiveGate))
+        ? (_refLevelDb =
+            _seedReference(meterDb, instruments, preset, n, effectiveGate, loudest))
         : (_refLevelDb = _refLevelDb! + params.refAlpha * (loudest - _refLevelDb!));
 
     // Keep the star on top. The channel with the highest target (normally the
@@ -253,8 +295,16 @@ class AutoMixEngine {
     // (star on top) is preserved. Only a clearly-playing channel may anchor — we
     // won't duck the band to chase a near-silent input — and the shift is bounded
     // by [maxDuckDb]. `_refLevelDb` keeps the un-ducked C (seed/log continuity).
+    //
+    // The duck is computed **without** [masterDb]. If the volume-geral offset fed
+    // the deficit it would self-cancel: raising master grows the star's shortfall
+    // → grows the duck → pulls the band back down by the same amount, so the knob
+    // did nothing (a real bug caught in a sim log — master 10 vs 0 gave identical
+    // sends). Master is applied separately below, bounded by the star's headroom.
     var duck = 0.0;
     var anchorTargetRel = -1e9;
+    var anchorMeter = 0.0;
+    var hasAnchor = false;
     for (var i = 0; i < n; i++) {
       final meter = meterDb[i];
       if (meter <= effectiveGate) continue;
@@ -262,17 +312,42 @@ class AutoMixEngine {
       final instrument =
           i < instruments.length ? instruments[i] : InstrumentType.unknown;
       final targetRel = preset.targetFor(instrument) + (boostDb[i + 1] ?? 0.0);
-      final desired = ref + masterDb + targetRel - meter;
+      final desired = ref + targetRel - meter; // master-free
       final deficit =
           (desired - params.sendCeilingDb).clamp(0.0, params.maxDuckDb).toDouble();
       if (targetRel > anchorTargetRel) {
         anchorTargetRel = targetRel;
+        anchorMeter = meter;
         duck = deficit;
+        hasAnchor = true;
       } else if (targetRel == anchorTargetRel && deficit > duck) {
+        anchorMeter = meter;
         duck = deficit;
       }
     }
     final effectiveRef = ref - duck;
+
+    // Volume geral (master). Shifts the whole monitor without touching the
+    // balance. **Lowering is always possible; raising is bounded by the star's
+    // headroom** to the send ceiling — once the star (highest target) sits at
+    // +[sendCeilingDb] the bus is physically maxed and can't get louder without
+    // burying it, so master-up simply stops there. The effective master is
+    // applied instantly to the tracked sends (a knob move must respond now, not
+    // crawl in at the anti-pumping slew rate).
+    final starHeadroom = hasAnchor
+        ? max(0.0,
+            params.sendCeilingDb - (effectiveRef + anchorTargetRel - anchorMeter))
+        : double.infinity;
+    final masterEff = masterDb <= 0 ? masterDb : min(masterDb, starHeadroom);
+    final double dMaster;
+    if (!_masterSynced) {
+      _masterSynced = true;
+      _appliedMasterEff = masterEff; // adopt without a jump (ramps via the slew)
+      dMaster = 0.0;
+    } else {
+      dMaster = masterEff - _appliedMasterEff;
+      _appliedMasterEff = masterEff;
+    }
 
     final commands = <SendCommand>[];
 
@@ -289,8 +364,9 @@ class AutoMixEngine {
 
       // Compensation: send needed so this channel sits at its target monitor
       // level. Louder meter → lower send; quieter meter → higher send.
-      // [effectiveRef] folds in the keep-the-star-on-top duck.
-      var sendTarget = effectiveRef + masterDb + targetRel - meter;
+      // [effectiveRef] folds in the keep-the-star-on-top duck; [masterEff] the
+      // headroom-bounded volume-geral offset.
+      var sendTarget = effectiveRef + masterEff + targetRel - meter;
 
       // Safety bounds: duck freely; boost is bounded per channel and absolutely.
       final baseline = _refSendDb[ch] ?? _currentSendDb[ch] ?? params.sendFloorDb;
@@ -312,14 +388,39 @@ class AutoMixEngine {
 
       sendTarget = sendTarget.clamp(params.sendFloorDb, ceiling);
 
-      final current = _currentSendDb[ch] ?? baseline;
+      var current = _currentSendDb[ch] ?? baseline;
+
+      // Instant master shift: a volume-geral change is applied to this (active)
+      // channel now, not slewed. Silent channels stay frozen — they `continue`d
+      // at the gate above, so the shift never un-freezes them. The command below
+      // is emitted even if the residual compensation error is within the deadband,
+      // so the knob move reaches the mixer immediately.
+      var masterShifted = false;
+      if (dMaster != 0.0) {
+        final shifted = (current + dMaster).clamp(params.sendFloorDb, ceiling);
+        if (shifted != current) {
+          current = shifted;
+          _currentSendDb[ch] = current;
+          masterShifted = true;
+        }
+      }
+
       final err = sendTarget - current;
 
       // Deadband: small errors preserve musical dynamics and avoid churn.
-      if (err.abs() < params.deadbandDb) continue;
+      if (err.abs() < params.deadbandDb) {
+        if (masterShifted) {
+          commands.add(
+              SendCommand(ch: ch, levelFloat: dbToFloat(current).clamp(0.0, 1.0)));
+        }
+        continue;
+      }
 
-      // Slew-limited step toward the target.
-      final step = err.clamp(-params.maxStepDb, params.maxStepDb);
+      // Slew-limited step toward the target — asymmetric. Ducking (err < 0, the
+      // source got loud) is allowed to move faster than boosting (err > 0, the
+      // source went quiet) so the engine reacts to "too loud" but doesn't chase
+      // musical gaps upward. This asymmetry is what stops the tick-to-tick pumping.
+      final step = err.clamp(-params.maxStepDb, params.maxBoostStepDb);
       final newDb = current + step;
       _currentSendDb[ch] = newDb;
 
@@ -355,17 +456,26 @@ class AutoMixEngine {
   /// closely as possible at activation — each active channel implies
   /// `C_i = meter_i + baseline_i − target_i`; we take the median for robustness.
   /// This makes enabling Auto-Mix a gentle "snap to balance" rather than a jump.
+  ///
+  /// Only channels within [EngineParams.seedAnchorRangeDb] of the [loudest]
+  /// channel anchor the seed — tighter than the participation gate. Channels
+  /// sitting just above the silence floor (bleed, a barely-open mic) would
+  /// otherwise drag the median far below where the band actually is and starve
+  /// the whole monitor. The anchor window is never looser than the participation
+  /// gate.
   double _seedReference(
     List<double> meterDb,
     List<InstrumentType> instruments,
     GenrePreset preset,
     int n,
     double effectiveGate,
+    double loudest,
   ) {
+    final anchorGate = max(loudest - params.seedAnchorRangeDb, effectiveGate);
     final candidates = <double>[];
     for (var i = 0; i < n; i++) {
       final meter = meterDb[i];
-      if (meter <= effectiveGate) continue;
+      if (meter <= anchorGate) continue;
       final ch = i + 1;
       final baseline = _refSendDb[ch] ?? 0.0;
       // A channel parked off carries no balance information — leaving it in

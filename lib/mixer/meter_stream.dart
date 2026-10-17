@@ -16,12 +16,15 @@ import '../osc/x32_protocol.dart';
 ///
 /// Two parallel windows:
 ///   display — fast (~300ms), drives VU meters in the UI
-///   engine  — slow (~3s), drives the Auto-Mix correction loop (M3)
+///   engine  — slow (~6s), drives the Auto-Mix correction loop (M3)
 class MeterStream {
   // EMA alpha for ~300ms display at 50ms update interval: 1 - exp(-50/300) ≈ 0.15
   static const _displayAlpha = 0.15;
-  // EMA alpha for ~3s engine smoothing at 50ms update interval: 1 - exp(-50/3000) ≈ 0.016
-  static const _engineAlpha = 0.016;
+  // EMA alpha for ~6s engine smoothing at 50ms update interval: 1 - exp(-50/6000) ≈ 0.008
+  // Widened from ~3s after a church log showed the engine chasing phrase-level
+  // dynamics (vocal/keys pumping in and out); a longer RMS averages the phrases
+  // so only sustained level changes drive a correction.
+  static const _engineAlpha = 0.008;
 
   final List<double> _rawDb = List.filled(48, -90.0);
   // Smoothed POWER (amplitude², linear), converted to dB on read. Averaging
@@ -54,12 +57,12 @@ class MeterStream {
       ? _powToDb(_displayPow[channelIndex])
       : -90.0;
 
-  /// Slow-smoothed dB (~3s RMS) for the Auto-Mix engine (index = channel - 1).
+  /// Slow-smoothed dB (~6s RMS) for the Auto-Mix engine (index = channel - 1).
   double engineDb(int channelIndex) => channelIndex < _enginePow.length
       ? _powToDb(_enginePow[channelIndex])
       : -90.0;
 
-  /// Snapshot of all 32 slow-smoothed (~3s RMS) input channel dB values — the
+  /// Snapshot of all 32 slow-smoothed (~6s RMS) input channel dB values — the
   /// levels the Auto-Mix engine corrects on.
   List<double> get engineSnapshot =>
       List.generate(kInputChannelCount, (i) => _powToDb(_enginePow[i]),
@@ -68,7 +71,7 @@ class MeterStream {
   /// Snapshot of all 32 fast-smoothed (~300ms RMS) input channel dB values —
   /// what the on-screen VU bars show. Logged next to [engineSnapshot] for
   /// diagnosis: both are RMS now, so for a steady source they track closely; a
-  /// large gap means the source is very dynamic within the 3s window.
+  /// large gap means the source is very dynamic within the 6s window.
   List<double> get displaySnapshot =>
       List.generate(kInputChannelCount, (i) => _powToDb(_displayPow[i]),
           growable: false);

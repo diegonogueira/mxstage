@@ -12,6 +12,13 @@ import '../state/instrument_type.dart';
 import '../state/session_log.dart';
 import 'meter_stream.dart';
 
+/// Faixa do volume geral (masterDb) exposta na UI, em dB. Ajuste fino em torno
+/// do nível semeado — desloca o monitor todo sem mexer no balanço. Ao subir, o
+/// engine ainda respeita o teto de send (+10 dB), então canais perto do teto
+/// não sobem o valor cheio.
+const double kMasterMinDb = -12.0;
+const double kMasterMaxDb = 12.0;
+
 class DiscoveredMixer {
   final String ip;
   final String name;
@@ -249,6 +256,34 @@ class MixerClient extends ChangeNotifier {
   void clearChannelBoosts() {
     if (_engine.boostDb.isEmpty) return;
     _engine.boostDb.clear();
+    notifyListeners();
+  }
+
+  // ── Volume geral (masterDb) ────────────────────────────────────────────────
+  // Desloca o monitor inteiro pra cima/baixo **sem** mexer no balanço entre os
+  // canais (o "volume geral" do músico). Vai direto no engine (`masterDb`), que
+  // o relê a cada tick — como o boost. É lembrado por bus (cada retorno tem o
+  // seu), então a UI persiste/recarrega ao trocar de bus.
+
+  /// Volume geral atual (dB). 0 = nível semeado na ativação.
+  double get masterDb => _engine.masterDb;
+
+  /// Ajuste do usuário no volume geral (dB) — clampado e registrado no log.
+  /// Aplica no próximo tick de correção (ramp suave pelo slew do engine).
+  void setMasterVolume(double db) {
+    final v = db.clamp(kMasterMinDb, kMasterMaxDb).toDouble();
+    if (v == _engine.masterDb) return;
+    _engine.masterDb = v;
+    _log.event('master', {'db': v});
+    notifyListeners();
+  }
+
+  /// Restaura o volume geral salvo (no connect / troca de bus). Não registra
+  /// evento — não é ação do usuário.
+  void restoreMasterVolume(double db) {
+    final v = db.clamp(kMasterMinDb, kMasterMaxDb).toDouble();
+    if (v == _engine.masterDb) return;
+    _engine.masterDb = v;
     notifyListeners();
   }
 

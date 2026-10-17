@@ -41,6 +41,26 @@ class _MixerScreenState extends State<MixerScreen> {
     _loadGenre();
     _loadOverrides();
     _loadBoosts();
+    _loadMaster();
+  }
+
+  // Restaura o volume geral (masterDb) salvo para esta mesa+bus. Por bus, então
+  // é rechamado ao trocar de bus (cada retorno tem o seu nível).
+  Future<void> _loadMaster() async {
+    final mixer = _client.mixerName;
+    if (mixer == null || mixer.isEmpty) return;
+    final db = await AppSettings.masterDb(mixer, _client.busIndex);
+    if (!mounted) return;
+    _client.restoreMasterVolume(db);
+  }
+
+  // Ajuste do usuário no volume geral: aplica no engine e persiste por mesa+bus.
+  Future<void> _onMasterChanged(double db) async {
+    _client.setMasterVolume(db);
+    final mixer = _client.mixerName;
+    if (mixer != null && mixer.isNotEmpty) {
+      await AppSettings.setMasterDb(mixer, _client.busIndex, _client.masterDb);
+    }
   }
 
   // Restaura as sobreposições manuais de instrumento salvas para esta mesa.
@@ -115,6 +135,7 @@ class _MixerScreenState extends State<MixerScreen> {
       accent: mode.accent,
       onPicked: (bus) async {
         await _client.setBus(bus);
+        await _loadMaster(); // volume geral é por bus — recarrega o do novo bus
         if (mode.isLive) {
           await AppSettings.setLiveBus(bus);
           if (mounted) setState(() => _liveBus = bus);
@@ -249,15 +270,19 @@ class _MixerScreenState extends State<MixerScreen> {
         children: [
           // Landscape is short on height: fold the Auto-Mix row and the filter
           // tabs into one bar so the extra vertical space goes to fader throw.
-          if (isLandscape)
+          if (isLandscape) ...[
             _ControlBar(
               client: _client,
               present: present,
               selected: _group,
               onSelected: (g) => setState(() => _group = g),
-            )
-          else ...[
+            ),
+            _MasterVolumeBar(
+                client: _client, isLandscape: true, onChanged: _onMasterChanged),
+          ] else ...[
             _AutoMixBar(client: _client),
+            _MasterVolumeBar(
+                client: _client, isLandscape: false, onChanged: _onMasterChanged),
             _GroupTabs(
               present: present,
               selected: _group,
@@ -452,6 +477,98 @@ class _GenreDropdown extends StatelessWidget {
               )
               .toList(),
         ),
+      ),
+    );
+  }
+}
+
+// ── Volume geral (master) ─────────────────────────────────────────────────────
+// Desloca o monitor inteiro pra cima/baixo SEM mexer no balanço entre canais.
+// Fica sempre visível (o músico mexe direto, ao vivo) e é lembrado por bus. Só
+// tem efeito com o Auto-Mix ligado; desligado, fica esmaecido mas ainda
+// ajustável (pré-configura pra quando ligar). Um ajuste entra no monitor de
+// forma suave (ramp pelo slew do engine), sem pulo.
+
+class _MasterVolumeBar extends StatelessWidget {
+  final MixerClient client;
+  final bool isLandscape;
+  final ValueChanged<double> onChanged;
+
+  const _MasterVolumeBar({
+    required this.client,
+    required this.isLandscape,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final active = client.autoMixActive;
+    final db = client.masterDb.clamp(kMasterMinDb, kMasterMaxDb).toDouble();
+    final accent = active ? AppColors.green : Colors.white38;
+
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.panel,
+        border: Border(bottom: BorderSide(color: AppColors.border)),
+      ),
+      padding: EdgeInsets.symmetric(horizontal: 12, vertical: isLandscape ? 0 : 2),
+      child: Row(
+        children: [
+          Icon(Icons.volume_up, size: 15, color: accent),
+          const SizedBox(width: 6),
+          Text(
+            'Volume geral',
+            style: TextStyle(
+              fontSize: 12.5,
+              color: active ? Colors.white70 : Colors.white38,
+            ),
+          ),
+          Expanded(
+            child: SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                trackHeight: 3,
+                activeTrackColor: accent,
+                inactiveTrackColor: AppColors.border,
+                thumbColor: accent,
+                overlayColor: accent.withAlpha(40),
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+                overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+              ),
+              child: Slider(
+                value: db,
+                min: kMasterMinDb,
+                max: kMasterMaxDb,
+                divisions: ((kMasterMaxDb - kMasterMinDb) * 2).round(),
+                onChanged: onChanged,
+              ),
+            ),
+          ),
+          // Toque no valor pra voltar ao 0 (nível semeado na ativação).
+          GestureDetector(
+            onTap: db == 0.0 ? null : () => onChanged(0.0),
+            behavior: HitTestBehavior.opaque,
+            child: SizedBox(
+              width: 72,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  Text(
+                    '${db > 0 ? '+' : ''}${db.toStringAsFixed(1)} dB',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: accent,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  if (db != 0.0) ...[
+                    const SizedBox(width: 3),
+                    Icon(Icons.refresh, size: 13, color: accent.withAlpha(150)),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

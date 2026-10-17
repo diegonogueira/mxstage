@@ -189,6 +189,9 @@ class _Replay {
         final eff = _instr(r['effective'] as String?);
         if (ch >= 1 && ch <= 32) _instruments[ch - 1] = eff;
         _stats.putIfAbsent(ch, () => _ChStat()).effective = eff;
+      case 'master':
+        _master = (r['db'] as num).toDouble();
+        _engine.masterDb = _master;
     }
   }
 

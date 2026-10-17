@@ -27,6 +27,9 @@ class AppSettings {
   static String _genreKey(String mixer) => 'genre:$mixer';
   static String _overrideKey(String mixer) => 'instr_override:$mixer';
   static String _boostKey(String mixer) => 'ch_boost:$mixer';
+  // Volume geral (masterDb do engine) é **por bus** — cada retorno lembra o
+  // próprio nível, pois cada bus é o monitor de uma pessoa diferente.
+  static String _masterKey(String mixer, int bus) => 'master_db:$mixer:$bus';
 
   /// Bus atualmente designado como o da transmissão, ou `null` se nunca definido.
   static Future<int?> liveBus() async {
@@ -192,6 +195,26 @@ class AppSettings {
     await prefs.remove(_boostKey(mixer));
   }
 
+  // ── Volume geral (masterDb, dB) por mesa+bus ───────────────────────────────
+
+  /// Volume geral salvo desta [mixer]/[bus], ou `0.0` se nunca ajustado.
+  static Future<double> masterDb(String mixer, int bus) async {
+    if (mixer.isEmpty) return 0.0;
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getDouble(_masterKey(mixer, bus)) ?? 0.0;
+  }
+
+  /// Grava o volume geral [db] desta [mixer]/[bus] (remove a chave se `0`).
+  static Future<void> setMasterDb(String mixer, int bus, double db) async {
+    if (mixer.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    if (db == 0.0) {
+      await prefs.remove(_masterKey(mixer, bus));
+      return;
+    }
+    await prefs.setDouble(_masterKey(mixer, bus), db);
+  }
+
   /// Apaga TODAS as preferências que o app grava (Live bus + bus/gênero/overrides
   /// por mesa). Remove só as nossas chaves — não toca em prefs de plugins.
   static Future<void> clearAll() async {
@@ -202,7 +225,8 @@ class AppSettings {
               k.startsWith('stage_bus:') ||
               k.startsWith('genre:') ||
               k.startsWith('instr_override:') ||
-              k.startsWith('ch_boost:'),
+              k.startsWith('ch_boost:') ||
+              k.startsWith('master_db:'),
         );
     for (final k in ours.toList()) {
       await prefs.remove(k);

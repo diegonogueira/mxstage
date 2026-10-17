@@ -147,4 +147,24 @@ void main() {
     expect(client.instruments[1], client.detectedInstrument(2));
     expect(client.instruments[2], client.detectedInstrument(3));
   });
+
+  group('volume geral (master)', () {
+    test('começa em 0', () {
+      expect(client.masterDb, 0.0);
+    });
+
+    test('setMasterVolume ajusta e clampa na faixa exposta', () {
+      client.setMasterVolume(5.0);
+      expect(client.masterDb, 5.0);
+      client.setMasterVolume(100.0); // acima do teto
+      expect(client.masterDb, kMasterMaxDb);
+      client.setMasterVolume(-100.0); // abaixo do piso
+      expect(client.masterDb, kMasterMinDb);
+    });
+
+    test('restoreMasterVolume aplica o valor salvo (sem log de evento)', () {
+      client.restoreMasterVolume(-3.5);
+      expect(client.masterDb, -3.5);
+    });
+  });
 }

@@ -76,4 +76,40 @@ void main() {
     });
     expect(await AppSettings.instrumentOverrides(mixer), isEmpty);
   });
+
+  group('volume geral (masterDb) por mesa+bus', () {
+    test('sem valor salvo retorna 0.0', () async {
+      expect(await AppSettings.masterDb(mixer, 5), 0.0);
+    });
+
+    test('round-trip grava e relê por bus', () async {
+      await AppSettings.setMasterDb(mixer, 5, 3.5);
+      await AppSettings.setMasterDb(mixer, 9, -4.0);
+      expect(await AppSettings.masterDb(mixer, 5), 3.5);
+      expect(await AppSettings.masterDb(mixer, 9), -4.0);
+    });
+
+    test('é por bus — outro bus da mesma mesa não enxerga', () async {
+      await AppSettings.setMasterDb(mixer, 5, 6.0);
+      expect(await AppSettings.masterDb(mixer, 3), 0.0);
+    });
+
+    test('é por mesa — outra mesa não enxerga', () async {
+      await AppSettings.setMasterDb(mixer, 5, 6.0);
+      expect(await AppSettings.masterDb('OUTRA', 5), 0.0);
+    });
+
+    test('gravar 0 apaga a chave', () async {
+      await AppSettings.setMasterDb(mixer, 5, 6.0);
+      await AppSettings.setMasterDb(mixer, 5, 0.0);
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getKeys().any((k) => k.startsWith('master_db:')), isFalse);
+    });
+
+    test('clearAll remove a chave de volume geral', () async {
+      await AppSettings.setMasterDb(mixer, 5, 6.0);
+      await AppSettings.clearAll();
+      expect(await AppSettings.masterDb(mixer, 5), 0.0);
+    });
+  });
 }

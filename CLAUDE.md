@@ -60,7 +60,24 @@ Mantém o nível de cada canal **no fone** constante: se o músico toca mais alt
 `C` é semeado na ativação (preserva o balanço atual, sem pulo) e fica **fixo** por
 padrão (`refFollowSeconds → ∞`) — uma subida uniforme de toda a banda é ducked, não
 acompanhada. `master` é o "volume geral" do músico (desloca o monitor todo sem
-mexer no balanço entre canais).
+mexer no balanço entre canais) — exposto na UI como a barra **"Volume geral"**
+(`_MasterVolumeBar` no mixer, faixa `kMasterMinDb..kMasterMaxDb` = −12..+12 dB),
+lembrado **por bus** (`AppSettings.masterDb(mixer, bus)`), pois cada bus é o
+monitor de uma pessoa. É o controle pra ajustar o nível do fone **no app**, em vez
+de estourar a caixinha física.
+
+**Master × duck (não pode se cancelar):** o `master` **não** entra no cálculo do
+duck da estrela — se entrasse, subir o master aumentaria o déficit da voz (que
+está no teto) → aumentaria o duck na mesma medida → a banda voltava pra baixo e o
+knob "não fazia nada" (bug real pego num log de sim: master 10 vs 0 dava sends
+idênticos). O `master` é aplicado à parte, como `masterEff`: **abaixar sempre
+abaixa; subir é limitado pelo headroom da estrela até o teto** (`sendCeilingDb`) —
+quando a voz já está no teto (medidor baixo → engine já jogou no talo, comum no
+sim), subir não tem pra onde ir (honesto: o send está no máximo físico), só
+abaixar/recuperar funciona. Numa mesa com ganho quente a voz não vive no teto e o
+lado de cima também anda. E a mudança é **instantânea** (`_appliedMasterEff` +
+`dMaster` deslocam os sends dos canais ativos no tick, sem o slew lento) — knob é
+ação do usuário, não drift. Canais em silêncio ficam congelados (não deslocam).
 
 **Alvo por instrumento** vem de `lib/state/genre_presets.dart`: `kBaseProfile`
 (balanço neutro relativo à voz, âncora 0 dB) + `kGenreDeltas` (tempero por estilo).
@@ -70,10 +87,21 @@ O estilo só nuança o balanço neutro — nunca o sobrescreve.
 (40 dB) do canal mais alto do tick, e nunca abaixo de `silenceFloorDb` (−65 dB
 absoluto). Silêncio real congela o canal — o Auto-Mix segura o que já está no
 monitor, nunca "abre" (des-muta) um canal puxado pra baixo. Cadência: tick de
-`kCorrectionIntervalMs` (1000 ms); o medidor do engine é uma **RMS de ~3 s**
+`kCorrectionIntervalMs` (1000 ms); o medidor do engine é uma **RMS de ~6 s**
 (`lib/mixer/meter_stream.dart`). A média é no **domínio de potência** (amplitude²),
 não em dB — senão fontes picotadas (skank de reggae, batida de bateria) leem
-15–20 dB abaixo do real e o engine duca de menos, deixando-as altas no fone.
+15–20 dB abaixo do real e o engine duca de menos, deixando-as altas no fone. A
+janela era de ~3 s; foi alargada porque num log real o engine perseguia a dinâmica
+de *frase* (voz/teclado bombeando pra dentro e pra fora) — 6 s deixa só mudança
+sustentada de nível disparar correção.
+
+**Anti-pumping (slew assimétrico + zona morta):** a correção não deve caçar
+dinâmica musical, só drift. O passo é **assimétrico**: ducar (fonte ficou alta) até
+`maxStepDb` (2 dB/s), mas *boostar* (fonte ficou baixa) só até `maxBoostStepDb`
+(0,75 dB/s) — reage a "ficou alto" mas não corre pra preencher pausa/fim de frase
+(que voltaria a ducar no próximo ataque). A `deadbandDb` é **2 dB** (era 1): tolera
+variação de frase sem mexer. Antes o slew era 4 dB/s simétrico e o mix inteiro
+oscilava dezenas de dB tick-a-tick ("sobe e some toda hora").
 
 **Manter a estrela no topo:** quando o canal de maior alvo (normalmente a voz)
 cai tanto que o teto do send (+10 dB) não consegue mais levantá-lo até o alvo,
@@ -97,11 +125,23 @@ espalhamento pra julgar). Isso foi confirmado num log real: a ativação "cedo d
 travava `C=-1,9` e faminto; com o fix, segura 5 ticks e semeia em `C≈-15` com o
 balanço do estilo cravado.
 
+**Âncora do seed (`seedAnchorRangeDb`, 20 dB):** ao semear, o `C` sai da **mediana**
+de `medidor + baseline − alvo` sobre os canais ativos — mas só os que estão dentro
+de `seedAnchorRangeDb` do canal mais alto entram (janela mais estreita que os 40 dB
+do gate de participação). Num log real, 3 canais colados no piso de silêncio
+(vazamento / mic mal-aberta) que passaram o gate largo puxaram a mediana **~22 dB pra
+baixo** (`C=-68,8` em vez de ~−44), estrangulando o monitor inteiro (tudo baixo,
+músico forçado a jogar a caixinha do fone no talo). Restringir a âncora aos canais que
+realmente carregam o mix semeia o `C` onde a banda de fato está. A janela é relativa
+ao mais alto (independe da escala do console) e nunca mais frouxa que o gate.
+
 **Premissa de tuning — fones-only (IEM no Stage, headphone na Live).** Sem caminho
 acústico do monitor de volta pro microfone não há microfonia, então o motor é
 agressivo pra cravar cada instrumento no alvo do estilo ("jogar no talo"): em
-`EngineParams`, teto `sendCeilingDb` +10 dB, boost até `maxBoostDb` 24 dB, slew
-`maxStepDb` 4 dB/s. A única proteção de boost que sobra é a **guarda adaptativa**
+`EngineParams`, teto `sendCeilingDb` +10 dB, boost até `maxBoostDb` 24 dB, slew de
+duck `maxStepDb` 2 dB/s / de boost `maxBoostStepDb` 0,75 dB/s (ver Anti-pumping
+acima — era 4 dB/s simétrico). A única proteção de boost que sobra é a **guarda
+adaptativa**
 (`boostRampDb` 25 dB): o boost cheio só é liberado enquanto o canal está bem acima
 do piso de ruído, recuando perto do silêncio — assim não amplifica chiado/vazamento
 de um canal quase mudo.
