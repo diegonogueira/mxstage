@@ -84,6 +84,16 @@ seguem `kRoleDeltas` (ex.: tecladista desce guitarra/piano/outro teclado −3;
 baterista sobe kit e baixo; baixista sobe bumbo +4). Como o topo é normalizado em
 0 dB, o "meu" vira o canal mais alto. Na Live não há papel (`ownChannel = null`,
 voz como âncora). Só vale no Equalizar (o Auto-Mix contínuo ignora).
+A **bateria é um conjunto**: no seletor é uma entrada só (o canal guardado é um
+representante, `drumKitChannel`) e o kit inteiro sobe por `kRoleDeltas` — sem
+extra no canal escolhido. O seletor esconde canais sem sinal desde a conexão
+(`MixerClient.channelHeard`, limiar `kHeardThresholdDb`) e desconhecidos, com
+"Mostrar todos". Sem escolha salva (`AppSettings.hasOwnChannelChoice`), a tela
+sugere pelo **nome do bus** (`ownChannelFromBusName`: nome igual ao canal →
+bateria = kit → "Ministro" = voz principal → tipo com canal único; ambíguo =
+nada). Sugestão não é gravada; "Nenhum" grava 0 (escolha explícita).
+
+**Barra (retrato):** `[Equalizar] [Eu: … ▾] ··· [escudo] [Auto-Mix] [✕]`.
 
 **Estilo fixo em Worship:** o seletor saiu da tela — entre estilos de igreja a
 diferença é ~1–4 dB, quase só bateria. `kGenreDeltas` fica no código pra voltar

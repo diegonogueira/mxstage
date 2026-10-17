@@ -233,7 +233,16 @@ class AppSettings {
 
   // ── Meu canal (instrumento do dono do retorno) por mesa+bus ───────────────
 
-  /// Canal (1-based) escolhido como "meu" nesta [mixer]/[bus], ou `null`.
+  /// `true` se o músico já escolheu (ou escolheu "Nenhum") nesta [mixer]/[bus].
+  /// Sem escolha, a tela tenta detectar pelo nome do bus.
+  static Future<bool> hasOwnChannelChoice(String mixer, int bus) async {
+    if (mixer.isEmpty) return false;
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.containsKey(_ownKey(mixer, bus));
+  }
+
+  /// Canal (1-based) escolhido como "meu" nesta [mixer]/[bus], ou `null`
+  /// (nunca escolhido ou "Nenhum").
   static Future<int?> ownChannel(String mixer, int bus) async {
     if (mixer.isEmpty) return null;
     final prefs = await SharedPreferences.getInstance();
@@ -241,15 +250,12 @@ class AppSettings {
     return (v != null && v >= 1) ? v : null;
   }
 
-  /// Grava (ou remove, com `null`) o "meu canal" desta [mixer]/[bus].
+  /// Grava o "meu canal" desta [mixer]/[bus]. `null` grava "Nenhum" (0) — uma
+  /// escolha explícita, que impede a detecção pelo nome do bus de voltar.
   static Future<void> setOwnChannel(String mixer, int bus, int? ch) async {
     if (mixer.isEmpty) return;
     final prefs = await SharedPreferences.getInstance();
-    if (ch == null) {
-      await prefs.remove(_ownKey(mixer, bus));
-      return;
-    }
-    await prefs.setInt(_ownKey(mixer, bus), ch);
+    await prefs.setInt(_ownKey(mixer, bus), ch ?? 0);
   }
 
   /// Apaga TODAS as preferências que o app grava (Live bus + bus/gênero/overrides

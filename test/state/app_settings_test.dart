@@ -127,10 +127,12 @@ void main() {
       expect(await AppSettings.ownChannel(mixer, 5), isNull);
     });
 
-    test('null remove; clearAll apaga', () async {
+    test('null grava "Nenhum" (escolha explícita); clearAll apaga', () async {
+      expect(await AppSettings.hasOwnChannelChoice(mixer, 4), isFalse);
       await AppSettings.setOwnChannel(mixer, 4, 8);
       await AppSettings.setOwnChannel(mixer, 4, null);
       expect(await AppSettings.ownChannel(mixer, 4), isNull);
+      expect(await AppSettings.hasOwnChannelChoice(mixer, 4), isTrue);
       await AppSettings.setOwnChannel(mixer, 4, 8);
       await AppSettings.clearAll();
       expect(await AppSettings.ownChannel(mixer, 4), isNull);

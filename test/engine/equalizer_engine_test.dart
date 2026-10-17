@@ -246,7 +246,7 @@ void main() {
       final none = (equalized()).targetSendsDb(instr, preset);
       final mine = e.targetSendsDb(instr, preset);
       double rel(Map<int, double> s, int ch) => ear(s, ch) - ear(s, 1);
-      expect(rel(mine, 5) - rel(none, 5), closeTo(2, 0.01)); // canal escolhido
+      expect(rel(mine, 5) - rel(none, 5), closeTo(4, 0.01)); // bumbo = kit, sem extra
       expect(rel(mine, 4) - rel(none, 4), closeTo(4, 0.01)); // baixo
       expect(rel(mine, 2) - rel(none, 2), closeTo(-3, 0.01)); // teclado
     });

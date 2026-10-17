@@ -1,3 +1,4 @@
+import 'channel_mapper.dart';
 import 'instrument_type.dart';
 
 /// Papel do músico dono do retorno — define "como cada um precisa se ouvir".
@@ -39,13 +40,13 @@ MusicianRole roleFor(InstrumentType t) => switch (t) {
       InstrumentType.unknown => MusicianRole.other,
     };
 
-/// Quanto o **meu canal** sobe (dB) sobre o alvo dele — o "mais eu". Bateria
-/// sobe menos no canal escolhido porque o kit inteiro já sobe em
-/// [kRoleDeltas] (o baterista escolhe um mic, mas quer ouvir a bateria toda).
+/// Quanto o **meu canal** sobe (dB) sobre o alvo dele — o "mais eu". A bateria
+/// não tem entrada aqui: o baterista escolhe a **bateria como conjunto** (o
+/// canal guardado é só um representante do kit) e o kit inteiro sobe por
+/// [kRoleDeltas] — nenhuma peça é tratada à parte.
 const Map<MusicianRole, double> kOwnChannelBoostDb = {
   MusicianRole.vocal: 6.0,
   MusicianRole.keys: 6.0,
-  MusicianRole.drums: 2.0,
   MusicianRole.bass: 6.0,
   MusicianRole.guitar: 6.0,
   MusicianRole.melody: 6.0,
@@ -139,6 +140,72 @@ double roleOffsetDb({
 }) {
   if (ownChannel == null) return 0.0;
   final role = roleFor(ownType);
-  if (ch == ownChannel) return kOwnChannelBoostDb[role] ?? 0.0;
+  if (ch == ownChannel && role != MusicianRole.drums) {
+    return kOwnChannelBoostDb[role] ?? 0.0;
+  }
   return kRoleDeltas[role]?[type] ?? 0.0;
+}
+
+/// Peça da bateria (kit) — no seletor, o kit aparece como **uma** entrada.
+bool isDrumKit(InstrumentType t) => roleFor(t) == MusicianRole.drums;
+
+/// Representante do kit pra guardar como "meu canal" (prefere o bumbo), ou null
+/// se não há bateria. Qual peça é guardada não muda o resultado.
+int? drumKitChannel(List<InstrumentType> instruments) {
+  int? first;
+  for (var i = 0; i < instruments.length; i++) {
+    if (instruments[i] == InstrumentType.kick) return i + 1;
+    if (first == null && isDrumKit(instruments[i])) first = i + 1;
+  }
+  return first;
+}
+
+String _norm(String s) => s
+    .toLowerCase()
+    .replaceAll(RegExp('[áàâã]'), 'a')
+    .replaceAll(RegExp('[éê]'), 'e')
+    .replaceAll('í', 'i')
+    .replaceAll(RegExp('[óôõ]'), 'o')
+    .replaceAll('ú', 'u')
+    .replaceAll('ç', 'c')
+    .replaceAll(RegExp(r'[^a-z0-9]'), '');
+
+/// Sugere o "meu canal" pelo **nome do bus** (o retorno costuma levar o nome do
+/// músico/instrumento: "Teclado", "Baixo", "Bateria", "Ministro"…). Devolve null
+/// quando não dá pra ter certeza — aí o músico escolhe na mão.
+///
+/// 1. Nome do bus igual ao nome de um canal → esse canal.
+/// 2. Bateria → o kit (como conjunto).
+/// 3. Senão, o tipo reconhecido no nome do bus, se houver **um único** canal
+///    desse tipo. Vozes só pelo passo 1 (há vários canais de voz e "Vocal 1"
+///    não diz qual é).
+int? ownChannelFromBusName(
+  String busName,
+  List<String> channelNames,
+  List<InstrumentType> instruments,
+) {
+  final bus = _norm(busName);
+  if (bus.isEmpty) return null;
+  for (var i = 0; i < channelNames.length; i++) {
+    if (_norm(channelNames[i]) == bus) return i + 1;
+  }
+  final InstrumentType type;
+  if (const ['ministro', 'pastor', 'lider', 'levita'].any(bus.contains)) {
+    type = InstrumentType.leadVocal;
+  } else {
+    type = ChannelMapper.identify(name: busName);
+  }
+  if (type == InstrumentType.unknown) return null;
+  final role = roleFor(type);
+  if (role == MusicianRole.drums) return drumKitChannel(instruments);
+  if (role == MusicianRole.vocal && type != InstrumentType.leadVocal) return null;
+  final hits = [
+    for (var i = 0; i < instruments.length; i++)
+      if (instruments[i] == type) i + 1,
+  ];
+  if (role == MusicianRole.vocal) {
+    // Ministro/líder: só se houver um único canal de voz principal.
+    return hits.length == 1 && !bus.contains(RegExp(r'[0-9]')) ? hits.first : null;
+  }
+  return hits.length == 1 ? hits.first : null;
 }

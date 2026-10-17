@@ -26,6 +26,10 @@ const double kMasterMaxDb = 12.0;
 const int kEqualizeMeasureMs = 15000;
 const int kEqualizeSampleMs = 200;
 
+/// Acima disso (dB, medidor rápido) o canal conta como "já teve sinal" — bem
+/// acima do piso de ruído/vazamento de um canal fechado.
+const double kHeardThresholdDb = -55.0;
+
 class DiscoveredMixer {
   final String ip;
   final String name;
@@ -79,6 +83,8 @@ class MixerClient extends ChangeNotifier {
   bool _hasPendingMeterUpdate = false;
 
   final _meters = MeterStream();
+  // Canais que já tiveram sinal nesta conexão (1-based).
+  final Set<int> _heard = {};
   final _engine = AutoMixEngine();
   // Equalizador sob demanda. Compartilha o mapa de reforço com o Auto-Mix
   // (a UI de boost é a mesma pros dois modos).
@@ -165,6 +171,10 @@ class MixerClient extends ChangeNotifier {
 
   /// Algum modo automático está controlando os sends (Auto-Mix ou Equalizado).
   bool get monitorActive => _engine.isActive || _eq.isActive;
+
+  /// `true` se o canal [ch] (1-based) já teve sinal desde a conexão — o seletor
+  /// de "meu instrumento" esconde canais mudos/sem uso.
+  bool channelHeard(int ch) => _heard.contains(ch);
 
   /// "Meu canal" (1-based) — o instrumento do dono deste retorno, base do
   /// papel ("mais eu" + referências). null = sem papel (balanço de plateia).
@@ -693,6 +703,7 @@ class MixerClient extends ChangeNotifier {
     stopEqualizer();
     _baselineLevels.clear();
     _overrides.clear();
+    _heard.clear();
     _engine.boostDb.clear();
     _muted = false;
     _preMuteLevels.clear();
@@ -910,6 +921,9 @@ class MixerClient extends ChangeNotifier {
       if (floats.isNotEmpty) {
         _meters.update(floats);
         _hasPendingMeterUpdate = true;
+        for (var i = 0; i < kInputChannelCount; i++) {
+          if (_meters.displayDb(i) > kHeardThresholdDb) _heard.add(i + 1);
+        }
       }
     }
   }

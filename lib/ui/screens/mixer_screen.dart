@@ -121,19 +121,50 @@ class _MixerScreenState extends State<MixerScreen> {
   }
 
   // "Meu canal" é por mesa+bus. Na Live (transmissão) não há papel: balanço de
-  // plateia, voz como âncora.
+  // plateia, voz como âncora. Sem escolha salva, tenta detectar pelo nome do bus
+  // ([_tryDetectOwn], reexecutado conforme os nomes chegam da mesa).
+  bool _detectOwnPending = false;
+
   Future<void> _loadOwnChannel() async {
+    _detectOwnPending = false;
     if (widget.mode.isLive) {
       _client.ownChannel = null;
       return;
     }
     final mixer = _client.mixerName;
     if (mixer == null || mixer.isEmpty) return;
-    final ch = await AppSettings.ownChannel(mixer, _client.busIndex);
-    if (mounted) _client.ownChannel = ch;
+    final bus = _client.busIndex;
+    final chosen = await AppSettings.hasOwnChannelChoice(mixer, bus);
+    final ch = await AppSettings.ownChannel(mixer, bus);
+    if (!mounted) return;
+    _client.ownChannel = ch;
+    _detectOwnPending = !chosen;
+    _tryDetectOwn();
+  }
+
+  void _tryDetectOwn() {
+    if (!_detectOwnPending || _client.ownChannel != null) return;
+    final busName = _client.busName;
+    if (busName == null) return; // nome do bus ainda não chegou
+    final ch = ownChannelFromBusName(
+      busName,
+      [for (final c in _client.channels) c.name],
+      _client.instruments,
+    );
+    if (ch == null) return;
+    _detectOwnPending = false;
+    _client.ownChannel = ch; // sugestão: não grava — a escolha manual é que fica
+    final what = isDrumKit(_client.instruments[ch - 1])
+        ? 'Bateria'
+        : _client.channels[ch - 1].name;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+      content: Text('Seu instrumento: $what (pelo nome do bus "$busName"). '
+          'Toque em "Eu" pra mudar.'),
+    ));
   }
 
   void _setOwnChannel(int? ch) {
+    _detectOwnPending = false;
     _client.ownChannel = ch;
     final mixer = _client.mixerName;
     if (mixer != null && mixer.isNotEmpty) {
@@ -150,6 +181,7 @@ class _MixerScreenState extends State<MixerScreen> {
   void _onClientChange() {
     setState(() {});
     _announceEqualize();
+    _tryDetectOwn();
   }
 
   String _busLabel() {
@@ -439,9 +471,9 @@ class _AutoMixBar extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Row(
         children: [
-          _EqualizeControls(client: client),
-          const Spacer(),
-          if (ownPicker != null) Flexible(child: ownPicker!),
+          Expanded(
+            child: _EqualizeControls(client: client, ownPicker: ownPicker, spread: true),
+          ),
         ],
       ),
     );
@@ -455,8 +487,14 @@ class _AutoMixBar extends StatelessWidget {
 
 class _EqualizeControls extends StatelessWidget {
   final MixerClient client;
+  // "Meu instrumento" fica colado no Equalizar: são as duas escolhas do fluxo.
+  final Widget? ownPicker;
 
-  const _EqualizeControls({required this.client});
+  // Retrato: escudo e menu vão pra direita da barra. Paisagem: tudo junto (o
+  // resto da linha é das abas de filtro).
+  final bool spread;
+
+  const _EqualizeControls({required this.client, this.ownPicker, this.spread = false});
 
   @override
   Widget build(BuildContext context) {
@@ -500,9 +538,14 @@ class _EqualizeControls extends StatelessWidget {
     }
 
     return Row(
-      mainAxisSize: MainAxisSize.min,
+      mainAxisSize: spread ? MainAxisSize.max : MainAxisSize.min,
       children: [
         main,
+        if (ownPicker != null) ...[
+          const SizedBox(width: 8),
+          Flexible(child: ownPicker!),
+        ],
+        if (spread) const Spacer(),
         if (eqOn && !measuring)
           IconButton(
             tooltip: client.protectionEnabled
@@ -520,39 +563,28 @@ class _EqualizeControls extends StatelessWidget {
               color: client.protectionEnabled ? AppColors.green : Colors.white38,
             ),
           ),
-        if (autoOn)
-          const Padding(
-            padding: EdgeInsets.only(left: 6),
-            child: Text('Auto-Mix',
-                style: TextStyle(fontSize: 12, color: AppColors.green)),
+        // Auto-Mix contínuo (avançado) — ao lado do escudo, sempre visível.
+        IconButton(
+          tooltip: autoOn
+              ? 'Auto-Mix contínuo ligado (toque pra desligar)'
+              : 'Auto-Mix contínuo (avançado): corrige o tempo todo',
+          visualDensity: VisualDensity.compact,
+          onPressed: (enabled && !measuring)
+              ? () => autoOn ? client.disableAutoMix() : client.enableAutoMix()
+              : null,
+          icon: Icon(
+            Icons.auto_fix_high,
+            size: 18,
+            color: autoOn ? AppColors.green : Colors.white38,
           ),
-        PopupMenuButton<String>(
-          tooltip: 'Mais opções',
-          icon: const Icon(Icons.more_vert, size: 18, color: Colors.white54),
-          color: AppColors.elevated,
-          padding: EdgeInsets.zero,
-          onSelected: (v) {
-            switch (v) {
-              case 'auto':
-                autoOn ? client.disableAutoMix() : client.enableAutoMix();
-              case 'off':
-                client.stopEqualizer();
-            }
-          },
-          itemBuilder: (_) => [
-            if (eqOn)
-              const PopupMenuItem(
-                value: 'off',
-                child: Text('Desligar equalização (volta como estava)'),
-              ),
-            CheckedPopupMenuItem(
-              value: 'auto',
-              checked: autoOn,
-              enabled: enabled,
-              child: const Text('Auto-Mix contínuo (avançado)'),
-            ),
-          ],
         ),
+        if (eqOn && !measuring)
+          IconButton(
+            tooltip: 'Desligar equalização (volta como estava)',
+            visualDensity: VisualDensity.compact,
+            onPressed: client.stopEqualizer,
+            icon: const Icon(Icons.close, size: 18, color: Colors.white38),
+          ),
       ],
     );
   }
@@ -587,7 +619,7 @@ class _OwnChannelPicker extends StatelessWidget {
         : Colors.white54;
     final label = own == null
         ? 'Meu instrumento'
-        : 'Eu: ${client.channels[own - 1].name}';
+        : 'Eu: ${isDrumKit(client.instruments[own - 1]) ? 'Bateria' : client.channels[own - 1].name}';
 
     return InkWell(
       borderRadius: BorderRadius.circular(20),
@@ -624,17 +656,62 @@ class _OwnChannelPicker extends StatelessWidget {
   }
 
   Future<void> _pick(BuildContext context) async {
-    final own = client.ownChannel;
-    // Só canais com instrumento conhecido — os "Ch 25" vazios não ajudam.
-    final options = [
-      for (final ch in client.channels)
-        if (client.instruments[ch.ch - 1] != InstrumentType.unknown) ch,
-    ];
     final picked = await showModalBottomSheet<int>(
       context: context,
       backgroundColor: AppColors.panel,
       showDragHandle: true,
-      builder: (ctx) => SafeArea(
+      isScrollControlled: true,
+      builder: (ctx) => _OwnChannelSheet(client: client),
+    );
+    if (picked == null) return;
+    onChanged(picked == 0 ? null : picked);
+  }
+}
+
+// Lista do "Qual é o seu instrumento?": só canais com instrumento conhecido que
+// já tiveram sinal (mudos/sem uso ficam escondidos — "Mostrar todos" revela), e a
+// bateria como **uma** entrada (o kit todo), não peça por peça.
+class _OwnChannelSheet extends StatefulWidget {
+  final MixerClient client;
+
+  const _OwnChannelSheet({required this.client});
+
+  @override
+  State<_OwnChannelSheet> createState() => _OwnChannelSheetState();
+}
+
+class _OwnChannelSheetState extends State<_OwnChannelSheet> {
+  bool _showAll = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final client = widget.client;
+    final own = client.ownChannel;
+    final instr = client.instruments;
+    final ownIsKit = own != null && isDrumKit(instr[own - 1]);
+
+    bool known(int ch) => instr[ch - 1] != InstrumentType.unknown;
+    final heardAny = client.channels.any((c) => known(c.ch) && client.channelHeard(c.ch));
+    // Ninguém tocou ainda (antes do culto) → mostra todos os conhecidos.
+    bool visible(int ch) =>
+        _showAll || (known(ch) && (!heardAny || client.channelHeard(ch)));
+
+    final kit = drumKitChannel(instr);
+    final kitVisible = kit != null &&
+        client.channels.any((c) => isDrumKit(instr[c.ch - 1]) && visible(c.ch));
+    final others = [
+      for (final c in client.channels)
+        if (!isDrumKit(instr[c.ch - 1]) && visible(c.ch)) c,
+    ];
+    final hidden = client.channels.length - others.length -
+        client.channels.where((c) => isDrumKit(instr[c.ch - 1])).length;
+
+    Widget check(bool on) =>
+        on ? const Icon(Icons.check, color: AppColors.green) : const SizedBox.shrink();
+
+    return SafeArea(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.8),
         child: ListView(
           shrinkWrap: true,
           children: [
@@ -656,28 +733,36 @@ class _OwnChannelPicker extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.groups_outlined),
               title: const Text('Nenhum (balanço geral, voz na frente)'),
-              trailing: own == null ? const Icon(Icons.check, color: AppColors.green) : null,
-              onTap: () => Navigator.pop(ctx, 0),
+              trailing: check(own == null),
+              onTap: () => Navigator.pop(context, 0),
             ),
-            for (final ch in options)
+            if (kitVisible)
               ListTile(
-                leading: Icon(instrumentIcon(client.instruments[ch.ch - 1])),
+                leading: Icon(instrumentIcon(InstrumentType.drums)),
+                title: const Text('Bateria'),
+                subtitle: const Text('O kit todo + baixo pra travar junto'),
+                trailing: check(ownIsKit),
+                onTap: () => Navigator.pop(context, kit),
+              ),
+            for (final ch in others)
+              ListTile(
+                leading: Icon(instrumentIcon(instr[ch.ch - 1])),
                 title: Text(ch.name),
                 subtitle: Text(
-                  '${client.instruments[ch.ch - 1].label} · '
-                  '${roleFor(client.instruments[ch.ch - 1]).label}',
+                  '${instr[ch.ch - 1].label} · ${roleFor(instr[ch.ch - 1]).label}',
                 ),
-                trailing: own == ch.ch
-                    ? const Icon(Icons.check, color: AppColors.green)
-                    : null,
-                onTap: () => Navigator.pop(ctx, ch.ch),
+                trailing: check(own == ch.ch),
+                onTap: () => Navigator.pop(context, ch.ch),
+              ),
+            if (!_showAll && hidden > 0)
+              TextButton(
+                onPressed: () => setState(() => _showAll = true),
+                child: Text('Mostrar todos os canais ($hidden escondidos)'),
               ),
           ],
         ),
       ),
     );
-    if (picked == null) return;
-    onChanged(picked == 0 ? null : picked);
   }
 }
 
@@ -875,11 +960,7 @@ class _ControlBar extends StatelessWidget {
       padding: const EdgeInsets.only(left: 12, right: 8),
       child: Row(
         children: [
-          _EqualizeControls(client: client),
-          if (ownPicker != null) ...[
-            const SizedBox(width: 4),
-            ownPicker!,
-          ],
+          Flexible(child: _EqualizeControls(client: client, ownPicker: ownPicker)),
           if (showTabs) ...[
             const SizedBox(width: 10),
             Container(width: 1, height: 22, color: AppColors.border),
