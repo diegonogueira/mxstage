@@ -22,6 +22,7 @@ class AppSettings {
 
   static const _kLiveBus = 'live_bus';
   static const _kDebugMode = 'debug_mode';
+  static const _kProtection = 'eq_protection';
 
   static String _stageBusKey(String mixer) => 'stage_bus:$mixer';
   static String _genreKey(String mixer) => 'genre:$mixer';
@@ -215,6 +216,19 @@ class AppSettings {
     await prefs.setDouble(_masterKey(mixer, bus), db);
   }
 
+  // ── Proteção do modo equalizado (global, por device) ──────────────────────
+
+  /// Proteção (só abaixa) ligada? Padrão: ligada.
+  static Future<bool> protection() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_kProtection) ?? true;
+  }
+
+  static Future<void> setProtection(bool on) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kProtection, on);
+  }
+
   /// Apaga TODAS as preferências que o app grava (Live bus + bus/gênero/overrides
   /// por mesa). Remove só as nossas chaves — não toca em prefs de plugins.
   static Future<void> clearAll() async {
@@ -222,6 +236,7 @@ class AppSettings {
     final ours = prefs.getKeys().where(
           (k) =>
               k == _kLiveBus ||
+              k == _kProtection ||
               k.startsWith('stage_bus:') ||
               k.startsWith('genre:') ||
               k.startsWith('instr_override:') ||

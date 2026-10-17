@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../engine/auto_mix_engine.dart';
+import '../engine/equalizer_engine.dart';
 import '../osc/osc_codec.dart';
 import '../osc/x32_protocol.dart';
 import '../platform/background_keepalive.dart';
@@ -18,6 +19,12 @@ import 'meter_stream.dart';
 /// não sobem o valor cheio.
 const double kMasterMinDb = -12.0;
 const double kMasterMaxDb = 12.0;
+
+/// Quanto tempo o "Equalizar" escuta a banda (ms) e a cadência da amostragem
+/// (medidor rápido, ~300 ms RMS). 15 s cobrem uma frase/refrão inteiro; as
+/// pausas de cada canal são descartadas pelo gate do [EqualizerEngine].
+const int kEqualizeMeasureMs = 15000;
+const int kEqualizeSampleMs = 200;
 
 class DiscoveredMixer {
   final String ip;
@@ -73,6 +80,17 @@ class MixerClient extends ChangeNotifier {
 
   final _meters = MeterStream();
   final _engine = AutoMixEngine();
+  // Equalizador sob demanda. Compartilha o mapa de reforço com o Auto-Mix
+  // (a UI de boost é a mesma pros dois modos).
+  late final EqualizerEngine _eq = EqualizerEngine()..boostDb = _engine.boostDb;
+  Timer? _eqMeasureTimer;
+  Timer? _eqTimer;
+  int _eqElapsedMs = 0;
+  EqualizeResult? _lastEqualize;
+  // Escrita feita pelo próprio app (mute, restaurar baseline, engine). Um send
+  // escrito com isso desligado veio do músico (fader) — no modo equalizado vira
+  // ajuste fino em vez de ser "brigado".
+  bool _internalWrite = false;
   final _log = SessionLogger();
   Genre _genre = Genre.general;
 
@@ -128,6 +146,32 @@ class MixerClient extends ChangeNotifier {
 
   Genre get genre => _genre;
   bool get autoMixActive => _engine.isActive;
+
+  /// Mix equalizado (balanço fixo aplicado pelo "Equalizar").
+  bool get equalizerActive => _eq.isActive;
+
+  /// Escutando a banda pra equalizar.
+  bool get isEqualizing => _eq.isMeasuring;
+
+  /// Progresso da escuta (0..1).
+  double get equalizeProgress =>
+      (_eqElapsedMs / kEqualizeMeasureMs).clamp(0.0, 1.0).toDouble();
+
+  /// Resultado do último "Equalizar" (null antes do primeiro).
+  EqualizeResult? get lastEqualizeResult => _lastEqualize;
+
+  /// Algum modo automático está controlando os sends (Auto-Mix ou Equalizado).
+  bool get monitorActive => _engine.isActive || _eq.isActive;
+
+  /// Proteção (só abaixa) do modo equalizado.
+  bool get protectionEnabled => _eq.protectionEnabled;
+  set protectionEnabled(bool v) {
+    if (_eq.protectionEnabled == v) return;
+    _eq.protectionEnabled = v;
+    _log.event('protection', {'on': v});
+    _eqApplyNow();
+    notifyListeners();
+  }
   bool get isMuted => _muted;
 
   /// Quantos registros de diagnóstico já foram gravados nesta sessão.
@@ -192,6 +236,7 @@ class MixerClient extends ChangeNotifier {
       _overrides[ch] = type;
     }
     _applyEffective(idx);
+    _eqApplyNow();
     _log.event('override', {
       'ch': ch,
       'type': type?.name,
@@ -241,6 +286,7 @@ class MixerClient extends ChangeNotifier {
       _engine.boostDb[ch] = db;
     }
     _log.event('boost', {'ch': ch, 'db': db});
+    _eqApplyNow();
     notifyListeners();
   }
 
@@ -274,7 +320,9 @@ class MixerClient extends ChangeNotifier {
     final v = db.clamp(kMasterMinDb, kMasterMaxDb).toDouble();
     if (v == _engine.masterDb) return;
     _engine.masterDb = v;
+    _eq.masterDb = v;
     _log.event('master', {'db': v});
+    _eqApplyNow();
     notifyListeners();
   }
 
@@ -284,6 +332,8 @@ class MixerClient extends ChangeNotifier {
     final v = db.clamp(kMasterMinDb, kMasterMaxDb).toDouble();
     if (v == _engine.masterDb) return;
     _engine.masterDb = v;
+    _eq.masterDb = v;
+    _eqApplyNow();
     notifyListeners();
   }
 
@@ -300,6 +350,7 @@ class MixerClient extends ChangeNotifier {
     final next = index.clamp(1, kMixBusCount);
     if (next == _busIndex) return;
     if (_engine.isActive) disableAutoMix();
+    stopEqualizer();
     if (_muted) {
       _muted = false;
       _preMuteLevels.clear();
@@ -319,10 +370,12 @@ class MixerClient extends ChangeNotifier {
       _engine.activate(ref);
     }
     _log.event('genre', {'genre': g.name});
+    _eqApplyNow(); // o equalizado rebalanceia na hora, sem medir de novo
     notifyListeners();
   }
 
   void enableAutoMix() {
+    stopEqualizer(); // modos exclusivos
     final ref = {for (final ch in channels) ch.ch: _baselineLevels[ch.ch] ?? ch.sendLevel};
     _engine.activate(ref);
     _log.activate(
@@ -353,9 +406,11 @@ class MixerClient extends ChangeNotifier {
       // Restore all channels to pre-auto-mix baseline so the mixer state stays
       // clean. Without this, future reconnects read engine-modified values as
       // the new baseline and compound the drift each activation cycle.
-      for (final entry in _baselineLevels.entries) {
-        setChannelSend(entry.key, entry.value);
-      }
+      _internal(() {
+        for (final entry in _baselineLevels.entries) {
+          setChannelSend(entry.key, entry.value);
+        }
+      });
     }
     _engine.deactivate();
     _engineTimer?.cancel();
@@ -364,7 +419,9 @@ class MixerClient extends ChangeNotifier {
     notifyListeners();
   }
 
-  void toggleMute() {
+  void toggleMute() => _internal(_toggleMute);
+
+  void _toggleMute() {
     if (_muted) {
       for (final ch in channels) {
         final saved = _preMuteLevels[ch.ch];
@@ -393,9 +450,11 @@ class MixerClient extends ChangeNotifier {
       meterFastDb: _meters.displaySnapshot,
       meterRawDb: _meters.rawSnapshot,
     );
-    for (final cmd in cmds) {
-      setChannelSend(cmd.ch, cmd.levelFloat);
-    }
+    _internal(() {
+      for (final cmd in cmds) {
+        setChannelSend(cmd.ch, cmd.levelFloat);
+      }
+    });
 
     // Enforce engine state: if user dragged a fader manually, the engine's
     // _currentSendDb wasn't updated, so the channel deviation may be within
@@ -406,11 +465,123 @@ class MixerClient extends ChangeNotifier {
         final idx = entry.key - 1;
         if (idx >= 0 && idx < channels.length) {
           if ((entry.value - channels[idx].sendLevel).abs() > 0.005) {
-            setChannelSend(entry.key, entry.value);
+            _internal(() => setChannelSend(entry.key, entry.value));
           }
         }
       }
     }
+  }
+
+  // ── Equalizar (sob demanda) ──────────────────────────────────────────────
+  // Escuta a banda por [kEqualizeMeasureMs], ajusta todos os canais de uma vez
+  // pro balanço do estilo e depois fica parado. Só a Proteção (opcional) mexe
+  // sozinha — e só pra baixo. Ver [EqualizerEngine].
+
+  void _internal(void Function() f) {
+    final prev = _internalWrite;
+    _internalWrite = true;
+    try {
+      f();
+    } finally {
+      _internalWrite = prev;
+    }
+  }
+
+  /// Começa a escutar. Desliga o Auto-Mix contínuo (modos exclusivos). Se já
+  /// estava equalizado, o mix atual segue no ar até o novo resultado.
+  void equalize() {
+    if (!_connected || _eq.isMeasuring) return;
+    if (_engine.isActive) disableAutoMix();
+    _eq.startMeasure();
+    _eqElapsedMs = 0;
+    _log.event('equalizeStart', {'genre': _genre.name});
+    _eqMeasureTimer?.cancel();
+    _eqMeasureTimer =
+        Timer.periodic(const Duration(milliseconds: kEqualizeSampleMs), (t) {
+      _eq.addSample(_meters.displaySnapshot);
+      _eqElapsedMs += kEqualizeSampleMs;
+      if (_eqElapsedMs >= kEqualizeMeasureMs) {
+        t.cancel();
+        _eqMeasureTimer = null;
+        _finishEqualize();
+      }
+      notifyListeners();
+    });
+    notifyListeners();
+  }
+
+  /// Cancela a escuta em andamento (o mix atual não muda).
+  void cancelEqualize() {
+    _eqMeasureTimer?.cancel();
+    _eqMeasureTimer = null;
+    _eq.cancelMeasure();
+    notifyListeners();
+  }
+
+  void _finishEqualize() {
+    final current = {
+      for (final ch in channels)
+        ch.ch: floatToDb(_baselineLevels[ch.ch] ?? ch.sendLevel),
+    };
+    final r = _eq.finish(current);
+    _lastEqualize = r;
+    _log.event('equalize', {
+      'ok': r.ok,
+      'genre': _genre.name,
+      'level': {for (final e in r.levelDb.entries) '${e.key}': e.value},
+      'remembered': r.remembered,
+      'unheard': r.unheard,
+    });
+    if (!r.ok) {
+      notifyListeners();
+      return;
+    }
+    _eqApplyNow();
+    _eqTimer ??= Timer.periodic(
+      const Duration(milliseconds: kCorrectionIntervalMs),
+      (_) => _eqTick(),
+    );
+    notifyListeners();
+  }
+
+  void _eqTick() {
+    if (!_eq.isActive || _muted || !_connected) return;
+    final preset = kGenrePresets[_genre]!;
+    final meterDb = _meters.engineSnapshot;
+    final cmds = _eq.tick(meterDb, instruments, preset);
+    _log.tick(
+      meterDb: meterDb,
+      cmds: {for (final c in cmds) c.ch: c.levelFloat},
+      meterFastDb: _meters.displaySnapshot,
+    );
+    _internal(() {
+      for (final c in cmds) {
+        setChannelSend(c.ch, c.levelFloat);
+      }
+    });
+  }
+
+  /// Aplica na hora uma mudança do usuário (estilo, reforço, volume geral).
+  void _eqApplyNow() {
+    if (_eq.isActive) _eqTick();
+  }
+
+  /// Sai do modo equalizado e devolve os sends como estavam antes.
+  void stopEqualizer() {
+    cancelEqualize();
+    if (!_eq.isActive) return;
+    _eq.deactivate();
+    _eqTimer?.cancel();
+    _eqTimer = null;
+    if (_connected && !_muted) {
+      _internal(() {
+        for (final entry in _baselineLevels.entries) {
+          setChannelSend(entry.key, entry.value);
+        }
+      });
+    }
+    _log.event('equalizerOff');
+    notifyListeners();
   }
 
   // ── Discovery ─────────────────────────────────────────────────────────────
@@ -501,6 +672,7 @@ class MixerClient extends ChangeNotifier {
     // Log kept in memory so a diagnostic can still be exported after the service.
     _log.event('disconnect');
     disableAutoMix();
+    stopEqualizer();
     _baselineLevels.clear();
     _overrides.clear();
     _engine.boostDb.clear();
@@ -542,8 +714,13 @@ class MixerClient extends ChangeNotifier {
 
     // Manual fader adjustments (made while auto-mix is OFF) update the
     // baseline so the next auto-mix activation uses the user's intent as ref.
-    if (!_engine.isActive) {
+    if (!_engine.isActive && !_eq.isActive) {
       _baselineLevels[ch] = level;
+    }
+
+    // Equalizado: o fader do músico vira ajuste fino sobre o balanço.
+    if (_eq.isActive && !_internalWrite && !_muted) {
+      _eq.setManualSend(ch, floatToDb(level), instruments, kGenrePresets[_genre]!);
     }
 
     final address =
@@ -698,7 +875,7 @@ class MixerClient extends ChangeNotifier {
         if (idx >= 0 && idx < channels.length) {
           final level = (msg.args[0] as double).clamp(0.0, 1.0);
           channels[idx].sendLevel = level;
-          if (!_engine.isActive) {
+          if (!_engine.isActive && !_eq.isActive) {
             _baselineLevels[ch] = level;
           }
           notifyListeners();

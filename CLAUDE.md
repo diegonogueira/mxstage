@@ -1,8 +1,9 @@
 # MXWise — Auto-Mix de Retorno (Behringer X32)
 
-App Flutter/Dart que mantém o balanço do monitor pessoal de um músico na X32,
-corrigindo drift de nível com um loop de Auto-Mix que segura cada instrumento no
-alvo do estilo (ver [Auto-Mix Engine](#auto-mix-engine)).
+App Flutter/Dart que equaliza o monitor pessoal de um músico na X32: o fluxo
+principal é o **Equalizar sob demanda** (ver [Equalizar](#equalizar-sob-demanda--fluxo-principal));
+o loop contínuo de Auto-Mix (ver [Auto-Mix Engine](#auto-mix-engine)) fica como
+opção avançada no menu.
 
 ## Invariantes de segurança (nunca violar)
 
@@ -48,6 +49,35 @@ test/           # unit tests do engine e do codec
 
 Aux/Mix Bus (MixBus 1–16). Caminho de escrita: `/ch/NN/mix/MM/level ,f <0..1>`.
 Ultranet/P16 está fora de escopo no MVP.
+
+## Equalizar (sob demanda) — fluxo principal
+
+`lib/engine/equalizer_engine.dart`. Nasceu de testes reais na igreja: o Auto-Mix
+contínuo é um AGC por canal — não distingue "tocando baixo" de "parado
+(vazamento)", então **sobe o canal durante a pausa** e o músico **volta estourado**
+(sim: guitarra +18 dB, voz +8 dB); e por só cortar os outros, deixa o **mix todo
+baixo** (~6 dB). O Equalizar resolve os dois:
+
+1. Escuta `kEqualizeMeasureMs` (15 s) amostrando o medidor rápido a 5 Hz.
+2. Por canal, mede o **nível tocando** (gated): descarta piso/vazamento (−65 dB e
+   >40 dB abaixo do mais alto no quadro), acha o "forte" (p95) e fica com as
+   amostras até 15 dB abaixo dele; RMS em potência. <15% da janela ⇒ "não ouvido".
+3. `send = K + alvo(instrumento) − nível`, com `K` tal que o maior send = 0 dB
+   (empurra o mix pra cima; sobram +10 dB pro volume geral, que é limitado pela
+   folga até o teto pra não quebrar o balanço).
+4. Depois **fica parado**. Estilo, reforço, volume geral e troca de instrumento
+   recalculam na hora a partir dos níveis guardados (sem medir de novo). Fader
+   manual vira ajuste fino (trim), não é brigado.
+5. **Proteção** (opcional, escudo na UI, `AppSettings.protection`): só **abaixa**
+   um canal que ficou >6 dB acima do medido (corta até +3, attack 2 dB/s,
+   release 0,5 dB/s, máx. 12 dB) e devolve só até o nível equalizado. **Nada sobe
+   sozinho, nunca.**
+6. **Reequalizar mescla**: quem tocou é re-medido; quem estava calado mantém o
+   nível (e o trim) que o engine já sabia — não volta ao send de antes e não faz o
+   mix saltar. Desligar o modo devolve os sends de antes e zera a memória.
+
+Equalizar e Auto-Mix são exclusivos (`MixerClient.monitorActive`). Escritas
+internas passam por `_internal()` pra não virarem trim.
 
 ## Auto-Mix Engine
 

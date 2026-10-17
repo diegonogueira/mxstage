@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../engine/equalizer_engine.dart' show EqualizeResult;
 import '../../mixer/mixer_client.dart';
 import '../../osc/osc_codec.dart';
 import '../../state/app_mode.dart';
@@ -42,6 +43,31 @@ class _MixerScreenState extends State<MixerScreen> {
     _loadOverrides();
     _loadBoosts();
     _loadMaster();
+    _loadProtection();
+  }
+
+  Future<void> _loadProtection() async {
+    final on = await AppSettings.protection();
+    if (mounted) _client.protectionEnabled = on;
+  }
+
+  // Último resultado do "Equalizar" já anunciado (snackbar uma vez só).
+  EqualizeResult? _shownEqualize;
+
+  void _announceEqualize() {
+    final r = _client.lastEqualizeResult;
+    if (r == null || identical(r, _shownEqualize)) return;
+    _shownEqualize = r;
+    String names(List<int> chs) =>
+        chs.map((c) => _client.channels[c - 1].name).join(', ');
+    final msg = !r.ok
+        ? 'Não ouvi a banda tocando. Equalize com todo mundo tocando.'
+        : 'Equalizado: ${r.balanced.length} canais.'
+            '${r.remembered.isEmpty ? '' : ' Calados agora (ajuste anterior mantido): ${names(r.remembered)}.'}'
+            '${r.unheard.isEmpty ? '' : ' Não ouvidos (como estavam): ${names(r.unheard)}.'}';
+    ScaffoldMessenger.maybeOf(context)
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(msg)));
   }
 
   // Restaura o volume geral (masterDb) salvo para esta mesa+bus. Por bus, então
@@ -112,7 +138,10 @@ class _MixerScreenState extends State<MixerScreen> {
     super.dispose();
   }
 
-  void _onClientChange() => setState(() {});
+  void _onClientChange() {
+    setState(() {});
+    _announceEqualize();
+  }
 
   String _busLabel() {
     final name = _client.busName;
@@ -386,8 +415,6 @@ class _AutoMixBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final active = client.autoMixActive;
-
     return Container(
       decoration: const BoxDecoration(
         color: AppColors.panel,
@@ -396,31 +423,132 @@ class _AutoMixBar extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Row(
         children: [
-          Icon(
-            Icons.auto_fix_high,
-            size: 16,
-            color: active ? AppColors.green : Colors.white24,
-          ),
-          const SizedBox(width: 6),
-          Text(
-            'Auto-Mix',
-            style: TextStyle(
-              fontSize: 13,
-              color: active ? AppColors.green : Colors.white38,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          Switch(
-            value: active,
-            onChanged: (v) => v ? client.enableAutoMix() : client.disableAutoMix(),
-            activeThumbColor: AppColors.green,
-          ),
+          _EqualizeControls(client: client),
           const Spacer(),
           _GenreDropdown(client: client),
         ],
       ),
     );
   }
+}
+
+// ── Equalizar (sob demanda) + Proteção + menu ────────────────────────────────
+// O fluxo principal: "Equalizar" escuta ~15 s e ajusta todos de uma vez; depois
+// o mix fica parado. A Proteção (escudo) só abaixa quem passar muito do ponto.
+// O Auto-Mix contínuo (antigo) fica no menu, como opção avançada.
+
+class _EqualizeControls extends StatelessWidget {
+  final MixerClient client;
+
+  const _EqualizeControls({required this.client});
+
+  @override
+  Widget build(BuildContext context) {
+    final measuring = client.isEqualizing;
+    final eqOn = client.equalizerActive;
+    final autoOn = client.autoMixActive;
+    final enabled = client.isConnected;
+
+    final Widget main;
+    if (measuring) {
+      final left =
+          ((1 - client.equalizeProgress) * kEqualizeMeasureMs / 1000).ceil();
+      main = OutlinedButton.icon(
+        onPressed: client.cancelEqualize,
+        style: _btnStyle(AppColors.amber),
+        icon: SizedBox(
+          width: 14,
+          height: 14,
+          child: CircularProgressIndicator(
+            value: client.equalizeProgress,
+            strokeWidth: 2,
+            color: AppColors.amber,
+          ),
+        ),
+        label: Text('Ouvindo… ${left}s'),
+      );
+    } else {
+      main = FilledButton.icon(
+        onPressed: enabled ? client.equalize : null,
+        style: FilledButton.styleFrom(
+          backgroundColor: eqOn ? AppColors.green.withAlpha(40) : AppColors.green,
+          foregroundColor: eqOn ? AppColors.green : Colors.black,
+          visualDensity: VisualDensity.compact,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+        icon: Icon(eqOn ? Icons.refresh : Icons.equalizer, size: 16),
+        label: Text(eqOn ? 'Reequalizar' : 'Equalizar'),
+      );
+    }
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        main,
+        if (eqOn && !measuring)
+          IconButton(
+            tooltip: client.protectionEnabled
+                ? 'Proteção ligada: só abaixa quem passar muito do ponto'
+                : 'Proteção desligada: mix 100% parado',
+            visualDensity: VisualDensity.compact,
+            onPressed: () {
+              final v = !client.protectionEnabled;
+              client.protectionEnabled = v;
+              AppSettings.setProtection(v);
+            },
+            icon: Icon(
+              client.protectionEnabled ? Icons.shield : Icons.shield_outlined,
+              size: 18,
+              color: client.protectionEnabled ? AppColors.green : Colors.white38,
+            ),
+          ),
+        if (autoOn)
+          const Padding(
+            padding: EdgeInsets.only(left: 6),
+            child: Text('Auto-Mix',
+                style: TextStyle(fontSize: 12, color: AppColors.green)),
+          ),
+        PopupMenuButton<String>(
+          tooltip: 'Mais opções',
+          icon: const Icon(Icons.more_vert, size: 18, color: Colors.white54),
+          color: AppColors.elevated,
+          padding: EdgeInsets.zero,
+          onSelected: (v) {
+            switch (v) {
+              case 'auto':
+                autoOn ? client.disableAutoMix() : client.enableAutoMix();
+              case 'off':
+                client.stopEqualizer();
+            }
+          },
+          itemBuilder: (_) => [
+            if (eqOn)
+              const PopupMenuItem(
+                value: 'off',
+                child: Text('Desligar equalização (volta como estava)'),
+              ),
+            CheckedPopupMenuItem(
+              value: 'auto',
+              checked: autoOn,
+              enabled: enabled,
+              child: const Text('Auto-Mix contínuo (avançado)'),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  static ButtonStyle _btnStyle(Color c) => OutlinedButton.styleFrom(
+        foregroundColor: c,
+        side: BorderSide(color: c.withAlpha(150)),
+        visualDensity: VisualDensity.compact,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      );
 }
 
 // ── Genre dropdown ────────────────────────────────────────────────────────────
@@ -432,7 +560,7 @@ class _GenreDropdown extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final active = client.autoMixActive;
+    final active = client.monitorActive;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
@@ -485,7 +613,7 @@ class _GenreDropdown extends StatelessWidget {
 // ── Volume geral (master) ─────────────────────────────────────────────────────
 // Desloca o monitor inteiro pra cima/baixo SEM mexer no balanço entre canais.
 // Fica sempre visível (o músico mexe direto, ao vivo) e é lembrado por bus. Só
-// tem efeito com o Auto-Mix ligado; desligado, fica esmaecido mas ainda
+// tem efeito com o mix equalizado (ou o Auto-Mix) ligado; desligado, fica esmaecido mas ainda
 // ajustável (pré-configura pra quando ligar). Um ajuste entra no monitor de
 // forma suave (ramp pelo slew do engine), sem pulo.
 
@@ -502,7 +630,7 @@ class _MasterVolumeBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final active = client.autoMixActive;
+    final active = client.monitorActive;
     final db = client.masterDb.clamp(kMasterMinDb, kMasterMaxDb).toDouble();
     final accent = active ? AppColors.green : Colors.white38;
 
@@ -662,7 +790,6 @@ class _ControlBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final active = client.autoMixActive;
     final groups = kInstrumentGroupOrder.where(present.contains).toList();
     final showTabs = groups.length >= 2;
 
@@ -675,26 +802,7 @@ class _ControlBar extends StatelessWidget {
       padding: const EdgeInsets.only(left: 12, right: 8),
       child: Row(
         children: [
-          Icon(
-            Icons.auto_fix_high,
-            size: 16,
-            color: active ? AppColors.green : Colors.white24,
-          ),
-          const SizedBox(width: 6),
-          Text(
-            'Auto-Mix',
-            style: TextStyle(
-              fontSize: 13,
-              color: active ? AppColors.green : Colors.white38,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          Switch(
-            value: active,
-            onChanged: (v) => v ? client.enableAutoMix() : client.disableAutoMix(),
-            activeThumbColor: AppColors.green,
-            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
+          _EqualizeControls(client: client),
           const SizedBox(width: 4),
           _GenreDropdown(client: client),
           if (showTabs) ...[
