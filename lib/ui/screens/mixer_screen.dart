@@ -503,39 +503,20 @@ class _EqualizeControls extends StatelessWidget {
     final autoOn = client.autoMixActive;
     final enabled = client.isConnected;
 
-    final Widget main;
-    if (measuring) {
-      final left =
-          ((1 - client.equalizeProgress) * kEqualizeMeasureMs / 1000).ceil();
-      main = OutlinedButton.icon(
-        onPressed: client.cancelEqualize,
-        style: _btnStyle(AppColors.amber),
-        icon: SizedBox(
-          width: 14,
-          height: 14,
-          child: CircularProgressIndicator(
-            value: client.equalizeProgress,
-            strokeWidth: 2,
-            color: AppColors.amber,
-          ),
-        ),
-        label: Text('Ouvindo… ${left}s'),
-      );
-    } else {
-      main = FilledButton.icon(
-        onPressed: enabled ? client.equalize : null,
-        style: FilledButton.styleFrom(
-          backgroundColor: eqOn ? AppColors.green.withAlpha(40) : AppColors.green,
-          foregroundColor: eqOn ? AppColors.green : Colors.black,
-          visualDensity: VisualDensity.compact,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        ),
-        icon: Icon(eqOn ? Icons.refresh : Icons.equalizer, size: 16),
-        label: Text(eqOn ? 'Reequalizar' : 'Equalizar'),
-      );
-    }
+    // Botão duplo: [ Equalizar | ✨ ] — o modo principal à esquerda e o
+    // Auto-Mix contínuo (avançado) acoplado à direita. Os dois são exclusivos.
+    final main = _SplitModeButton(
+      measuring: measuring,
+      progress: client.equalizeProgress,
+      secondsLeft:
+          ((1 - client.equalizeProgress) * kEqualizeMeasureMs / 1000).ceil(),
+      eqOn: eqOn,
+      autoOn: autoOn,
+      enabled: enabled,
+      onEqualize: client.equalize,
+      onCancel: client.cancelEqualize,
+      onToggleAuto: () => autoOn ? client.disableAutoMix() : client.enableAutoMix(),
+    );
 
     return Row(
       mainAxisSize: spread ? MainAxisSize.max : MainAxisSize.min,
@@ -563,21 +544,6 @@ class _EqualizeControls extends StatelessWidget {
               color: client.protectionEnabled ? AppColors.green : Colors.white38,
             ),
           ),
-        // Auto-Mix contínuo (avançado) — ao lado do escudo, sempre visível.
-        IconButton(
-          tooltip: autoOn
-              ? 'Auto-Mix contínuo ligado (toque pra desligar)'
-              : 'Auto-Mix contínuo (avançado): corrige o tempo todo',
-          visualDensity: VisualDensity.compact,
-          onPressed: (enabled && !measuring)
-              ? () => autoOn ? client.disableAutoMix() : client.enableAutoMix()
-              : null,
-          icon: Icon(
-            Icons.auto_fix_high,
-            size: 18,
-            color: autoOn ? AppColors.green : Colors.white38,
-          ),
-        ),
         if (eqOn && !measuring)
           IconButton(
             tooltip: 'Desligar equalização (volta como estava)',
@@ -589,14 +555,123 @@ class _EqualizeControls extends StatelessWidget {
     );
   }
 
-  static ButtonStyle _btnStyle(Color c) => OutlinedButton.styleFrom(
-        foregroundColor: c,
-        side: BorderSide(color: c.withAlpha(150)),
-        visualDensity: VisualDensity.compact,
-        padding: const EdgeInsets.symmetric(horizontal: 12),
-        textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      );
+}
+
+class _SplitModeButton extends StatelessWidget {
+  final bool measuring;
+  final double progress;
+  final int secondsLeft;
+  final bool eqOn;
+  final bool autoOn;
+  final bool enabled;
+  final VoidCallback onEqualize;
+  final VoidCallback onCancel;
+  final VoidCallback onToggleAuto;
+
+  const _SplitModeButton({
+    required this.measuring,
+    required this.progress,
+    required this.secondsLeft,
+    required this.eqOn,
+    required this.autoOn,
+    required this.enabled,
+    required this.onEqualize,
+    required this.onCancel,
+    required this.onToggleAuto,
+  });
+
+  static const _radius = 18.0;
+  static const _height = 34.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = measuring ? AppColors.amber : AppColors.green;
+    // Esquerda: cheio enquanto não equalizou (é a ação principal); tonal
+    // depois (vira "Reequalizar"); contorno âmbar enquanto escuta.
+    final leftFilled = !measuring && !eqOn && !autoOn && enabled;
+    final leftBg = leftFilled
+        ? AppColors.green
+        : measuring
+            ? Colors.transparent
+            : AppColors.green.withAlpha(eqOn ? 40 : 0);
+    final leftFg = leftFilled
+        ? Colors.black
+        : enabled
+            ? accent
+            : Colors.white24;
+    final rightBg = autoOn ? AppColors.green : Colors.transparent;
+    final rightFg = autoOn
+        ? Colors.black
+        : (enabled && !measuring)
+            ? Colors.white54
+            : Colors.white24;
+
+    final Widget leftChild = measuring
+        ? Row(mainAxisSize: MainAxisSize.min, children: [
+            SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                  value: progress, strokeWidth: 2, color: AppColors.amber),
+            ),
+            const SizedBox(width: 6),
+            Text('Ouvindo… ${secondsLeft}s'),
+          ])
+        : Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(eqOn ? Icons.refresh : Icons.equalizer, size: 16, color: leftFg),
+            const SizedBox(width: 6),
+            Text(eqOn ? 'Reequalizar' : 'Equalizar'),
+          ]);
+
+    return Container(
+      height: _height,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(_radius),
+        border: Border.all(
+            color: enabled ? accent.withAlpha(150) : AppColors.border),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(_radius),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Material(
+              color: leftBg,
+              child: InkWell(
+                onTap: !enabled ? null : (measuring ? onCancel : onEqualize),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Center(
+                    child: DefaultTextStyle.merge(
+                      style: TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w600, color: leftFg),
+                      child: leftChild,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Container(width: 1, color: accent.withAlpha(enabled ? 150 : 60)),
+            Tooltip(
+              message: autoOn
+                  ? 'Auto-Mix contínuo ligado (toque pra desligar)'
+                  : 'Auto-Mix contínuo (avançado): corrige o tempo todo',
+              child: Material(
+                color: rightBg,
+                child: InkWell(
+                  onTap: (enabled && !measuring) ? onToggleAuto : null,
+                  child: SizedBox(
+                    width: 40,
+                    child: Icon(Icons.auto_fix_high, size: 17, color: rightFg),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 // ── Meu canal ────────────────────────────────────────────────────────────────
