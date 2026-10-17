@@ -93,7 +93,7 @@ sugere pelo **nome do bus** (`ownChannelFromBusName`: nome igual ao canal →
 bateria = kit → "Ministro" = voz principal → tipo com canal único; ambíguo =
 nada). Sugestão não é gravada; "Nenhum" grava 0 (escolha explícita).
 
-**Barra (retrato):** `[Equalizar | ✨Auto-Mix] [Eu: … ▾] ··· [escudo] [✕]` — botão duplo (`_SplitModeButton`): modo principal à esquerda, Auto-Mix contínuo acoplado à direita.
+**Barra:** uma faixa só, à esquerda, na ordem de uso — `[Eu: … ▾] [Equalizar | ✨] [🛡 Proteção]`, tudo com `_kCtlHeight` 36 / cantos de pílula. Botão duplo (`_SplitModeButton`): Equalizar à esquerda, Auto-Mix contínuo acoplado. "Desligar equalização" fica no ⋮ do topo (raro e perigoso de tocar sem querer).
 
 **Estilo fixo em Worship:** o seletor saiu da tela — entre estilos de igreja a
 diferença é ~1–4 dB, quase só bateria. `kGenreDeltas` fica no código pra voltar

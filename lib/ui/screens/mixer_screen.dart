@@ -421,14 +421,28 @@ class _MixerScreenState extends State<MixerScreen> {
           tooltip: 'Mais opções',
           onSelected: (v) {
             if (v == 'reset_instruments') _resetOverrides();
+            if (v == 'stop_equalizer') _client.stopEqualizer();
             if (v == 'export_diagnostic') _exportDiagnostic();
           },
           itemBuilder: (_) => [
+            // Fora da barra de propósito: raro no culto e perigoso de tocar sem
+            // querer (devolve o retorno ao que era antes de equalizar).
+            if (_client.equalizerActive)
+              const PopupMenuItem(
+                value: 'stop_equalizer',
+                child: Row(
+                  children: [
+                    Icon(Icons.undo, size: 18, color: AppColors.amber),
+                    SizedBox(width: 10),
+                    Text('Desligar equalização (volta como estava)'),
+                  ],
+                ),
+              ),
             const PopupMenuItem(
               value: 'reset_instruments',
               child: Row(
                 children: [
-                  Icon(Icons.auto_fix_high, size: 18, color: AppColors.blue),
+                  Icon(Icons.restart_alt, size: 18, color: AppColors.blue),
                   SizedBox(width: 10),
                   Text('Restaurar detecção automática'),
                 ],
@@ -472,7 +486,10 @@ class _AutoMixBar extends StatelessWidget {
       child: Row(
         children: [
           Expanded(
-            child: _EqualizeControls(client: client, ownPicker: ownPicker, spread: true),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: _EqualizeControls(client: client, ownPicker: ownPicker),
+            ),
           ),
         ],
       ),
@@ -490,11 +507,7 @@ class _EqualizeControls extends StatelessWidget {
   // "Meu instrumento" fica colado no Equalizar: são as duas escolhas do fluxo.
   final Widget? ownPicker;
 
-  // Retrato: escudo e menu vão pra direita da barra. Paisagem: tudo junto (o
-  // resto da linha é das abas de filtro).
-  final bool spread;
-
-  const _EqualizeControls({required this.client, this.ownPicker, this.spread = false});
+  const _EqualizeControls({required this.client, this.ownPicker});
 
   @override
   Widget build(BuildContext context) {
@@ -518,43 +531,90 @@ class _EqualizeControls extends StatelessWidget {
       onToggleAuto: () => autoOn ? client.disableAutoMix() : client.enableAutoMix(),
     );
 
+    // Uma faixa só, alinhada à esquerda, na ordem de uso:
+    // [Eu: … ▾] [Equalizar | ✨] [🛡 Proteção]. Mesma altura e cantos em tudo.
     return Row(
-      mainAxisSize: spread ? MainAxisSize.max : MainAxisSize.min,
+      mainAxisSize: MainAxisSize.min,
       children: [
-        main,
         if (ownPicker != null) ...[
-          const SizedBox(width: 8),
           Flexible(child: ownPicker!),
+          const SizedBox(width: 8),
         ],
-        if (spread) const Spacer(),
-        if (eqOn && !measuring)
-          IconButton(
+        main,
+        if (eqOn && !measuring) ...[
+          const SizedBox(width: 8),
+          _PillButton(
+            icon: client.protectionEnabled ? Icons.shield : Icons.shield_outlined,
+            label: 'Proteção',
+            on: client.protectionEnabled,
             tooltip: client.protectionEnabled
                 ? 'Proteção ligada: só abaixa quem passar muito do ponto'
                 : 'Proteção desligada: mix 100% parado',
-            visualDensity: VisualDensity.compact,
-            onPressed: () {
+            onTap: () {
               final v = !client.protectionEnabled;
               client.protectionEnabled = v;
               AppSettings.setProtection(v);
             },
-            icon: Icon(
-              client.protectionEnabled ? Icons.shield : Icons.shield_outlined,
-              size: 18,
-              color: client.protectionEnabled ? AppColors.green : Colors.white38,
-            ),
           ),
-        if (eqOn && !measuring)
-          IconButton(
-            tooltip: 'Desligar equalização (volta como estava)',
-            visualDensity: VisualDensity.compact,
-            onPressed: client.stopEqualizer,
-            icon: const Icon(Icons.close, size: 18, color: Colors.white38),
-          ),
+        ],
       ],
     );
   }
+}
 
+/// Medidas compartilhadas da faixa de controles (mesma altura e cantos).
+const double _kCtlHeight = 36.0;
+const double _kCtlRadius = 18.0;
+
+/// Pílula liga/desliga (ex.: Proteção) no mesmo formato do resto da faixa.
+class _PillButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool on;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  const _PillButton({
+    required this.icon,
+    required this.label,
+    required this.on,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = on ? AppColors.green : Colors.white54;
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: on ? AppColors.green.withAlpha(40) : Colors.transparent,
+        shape: StadiumBorder(
+          side: BorderSide(color: on ? AppColors.green.withAlpha(150) : AppColors.border),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: SizedBox(
+            height: _kCtlHeight,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, size: 16, color: fg),
+                  const SizedBox(width: 6),
+                  Text(label,
+                      style: TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w600, color: fg)),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _SplitModeButton extends StatelessWidget {
@@ -580,8 +640,8 @@ class _SplitModeButton extends StatelessWidget {
     required this.onToggleAuto,
   });
 
-  static const _radius = 18.0;
-  static const _height = 34.0;
+  static const _radius = _kCtlRadius;
+  static const _height = _kCtlHeight;
 
   @override
   Widget build(BuildContext context) {
@@ -623,9 +683,11 @@ class _SplitModeButton extends StatelessWidget {
             Text(eqOn ? 'Reequalizar' : 'Equalizar'),
           ]);
 
+    // A borda vai por cima (foregroundDecoration) e a Row estica na altura:
+    // o preenchimento de cada metade chega até a borda, sem "faixa" quebrada.
     return Container(
       height: _height,
-      decoration: BoxDecoration(
+      foregroundDecoration: BoxDecoration(
         borderRadius: BorderRadius.circular(_radius),
         border: Border.all(
             color: enabled ? accent.withAlpha(150) : AppColors.border),
@@ -634,6 +696,7 @@ class _SplitModeButton extends StatelessWidget {
         borderRadius: BorderRadius.circular(_radius),
         child: Row(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Material(
               color: leftBg,
@@ -696,35 +759,41 @@ class _OwnChannelPicker extends StatelessWidget {
         ? 'Meu instrumento'
         : 'Eu: ${isDrumKit(client.instruments[own - 1]) ? 'Bateria' : client.channels[own - 1].name}';
 
-    return InkWell(
-      borderRadius: BorderRadius.circular(20),
-      onTap: () => _pick(context),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-          border: Border.all(color: color.withAlpha(own != null ? 140 : 60)),
-          borderRadius: BorderRadius.circular(20),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              own == null
-                  ? Icons.person_outline
-                  : instrumentIcon(client.instruments[own - 1]),
-              size: 14,
-              color: color,
+    return Material(
+      color: Colors.transparent,
+      shape: StadiumBorder(
+        side: BorderSide(color: color.withAlpha(own != null ? 150 : 90)),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => _pick(context),
+        child: SizedBox(
+          height: _kCtlHeight,
+          child: Padding(
+            padding: const EdgeInsets.only(left: 12, right: 6),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  own == null
+                      ? Icons.person_outline
+                      : instrumentIcon(client.instruments[own - 1]),
+                  size: 16,
+                  color: color,
+                ),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    label,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.w600, color: color),
+                  ),
+                ),
+                Icon(Icons.arrow_drop_down, size: 18, color: color),
+              ],
             ),
-            const SizedBox(width: 4),
-            Flexible(
-              child: Text(
-                label,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 12, color: color),
-              ),
-            ),
-            Icon(Icons.arrow_drop_down, size: 16, color: color),
-          ],
+          ),
         ),
       ),
     );
