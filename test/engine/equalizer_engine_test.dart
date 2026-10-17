@@ -224,6 +224,48 @@ void main() {
     });
   });
 
+  group('meu instrumento', () {
+    double ear(Map<int, double> s, int ch) => _play[ch - 1] + s[ch]!;
+
+    test('tecladista: o teclado sobe +6, guitarra desce, voz mantém', () {
+      final e = equalized();
+      final none = e.targetSendsDb(instr, preset);
+      e.ownChannel = 2; // teclado
+      final mine = e.targetSendsDb(instr, preset);
+      // Relativo à voz (que não muda de papel pro tecladista):
+      double rel(Map<int, double> s, int ch) => ear(s, ch) - ear(s, 1);
+      expect(rel(mine, 2) - rel(none, 2), closeTo(6, 0.01));
+      expect(rel(mine, 3) - rel(none, 3), closeTo(-3, 0.01)); // guitarra
+      expect(rel(mine, 4) - rel(none, 4), closeTo(0, 0.01)); // baixo
+      // O topo continua em 0 dB (agora é o teclado).
+      expect(mine[2], closeTo(0, 0.01));
+    });
+
+    test('baterista: o kit todo e o baixo sobem', () {
+      final e = equalized()..ownChannel = 5; // bumbo
+      final none = (equalized()).targetSendsDb(instr, preset);
+      final mine = e.targetSendsDb(instr, preset);
+      double rel(Map<int, double> s, int ch) => ear(s, ch) - ear(s, 1);
+      expect(rel(mine, 5) - rel(none, 5), closeTo(2, 0.01)); // canal escolhido
+      expect(rel(mine, 4) - rel(none, 4), closeTo(4, 0.01)); // baixo
+      expect(rel(mine, 2) - rel(none, 2), closeTo(-3, 0.01)); // teclado
+    });
+
+    test('sem meu canal = balanço de plateia (voz na frente)', () {
+      final e = equalized()..ownChannel = null;
+      final s = e.targetSendsDb(instr, preset);
+      expect(ear(s, 2) - ear(s, 1), closeTo(preset.targetFor(InstrumentType.keys), 0.01));
+    });
+
+    test('trocar o meu canal vale na hora (sem medir de novo)', () {
+      final e = equalized();
+      e.tick(_frame(_play), instr, preset);
+      e.ownChannel = 3;
+      final cmds = e.tick(_frame(_play), instr, preset);
+      expect(cmds, isNotEmpty);
+    });
+  });
+
   test('tick só manda o que mudou', () {
     final e = equalized();
     final first = e.tick(_frame(_play), instr, preset);

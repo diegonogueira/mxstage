@@ -112,4 +112,28 @@ void main() {
       expect(await AppSettings.masterDb(mixer, 5), 0.0);
     });
   });
+
+  group('meu canal (por mesa+bus)', () {
+    const mixer = 'X32-IGREJA';
+    setUp(() => SharedPreferences.setMockInitialValues({}));
+
+    test('nunca escolhido = null', () async {
+      expect(await AppSettings.ownChannel(mixer, 4), isNull);
+    });
+
+    test('grava e lê por bus', () async {
+      await AppSettings.setOwnChannel(mixer, 4, 8);
+      expect(await AppSettings.ownChannel(mixer, 4), 8);
+      expect(await AppSettings.ownChannel(mixer, 5), isNull);
+    });
+
+    test('null remove; clearAll apaga', () async {
+      await AppSettings.setOwnChannel(mixer, 4, 8);
+      await AppSettings.setOwnChannel(mixer, 4, null);
+      expect(await AppSettings.ownChannel(mixer, 4), isNull);
+      await AppSettings.setOwnChannel(mixer, 4, 8);
+      await AppSettings.clearAll();
+      expect(await AppSettings.ownChannel(mixer, 4), isNull);
+    });
+  });
 }

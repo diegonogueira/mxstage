@@ -31,6 +31,8 @@ class AppSettings {
   // Volume geral (masterDb do engine) é **por bus** — cada retorno lembra o
   // próprio nível, pois cada bus é o monitor de uma pessoa diferente.
   static String _masterKey(String mixer, int bus) => 'master_db:$mixer:$bus';
+  // "Meu canal" também é por bus: cada retorno é de um músico.
+  static String _ownKey(String mixer, int bus) => 'own_ch:$mixer:$bus';
 
   /// Bus atualmente designado como o da transmissão, ou `null` se nunca definido.
   static Future<int?> liveBus() async {
@@ -229,6 +231,27 @@ class AppSettings {
     await prefs.setBool(_kProtection, on);
   }
 
+  // ── Meu canal (instrumento do dono do retorno) por mesa+bus ───────────────
+
+  /// Canal (1-based) escolhido como "meu" nesta [mixer]/[bus], ou `null`.
+  static Future<int?> ownChannel(String mixer, int bus) async {
+    if (mixer.isEmpty) return null;
+    final prefs = await SharedPreferences.getInstance();
+    final v = prefs.getInt(_ownKey(mixer, bus));
+    return (v != null && v >= 1) ? v : null;
+  }
+
+  /// Grava (ou remove, com `null`) o "meu canal" desta [mixer]/[bus].
+  static Future<void> setOwnChannel(String mixer, int bus, int? ch) async {
+    if (mixer.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    if (ch == null) {
+      await prefs.remove(_ownKey(mixer, bus));
+      return;
+    }
+    await prefs.setInt(_ownKey(mixer, bus), ch);
+  }
+
   /// Apaga TODAS as preferências que o app grava (Live bus + bus/gênero/overrides
   /// por mesa). Remove só as nossas chaves — não toca em prefs de plugins.
   static Future<void> clearAll() async {
@@ -241,7 +264,8 @@ class AppSettings {
               k.startsWith('genre:') ||
               k.startsWith('instr_override:') ||
               k.startsWith('ch_boost:') ||
-              k.startsWith('master_db:'),
+              k.startsWith('master_db:') ||
+              k.startsWith('own_ch:'),
         );
     for (final k in ours.toList()) {
       await prefs.remove(k);

@@ -8,6 +8,7 @@ import '../../state/app_mode.dart';
 import '../../state/app_settings.dart';
 import '../../state/genre_presets.dart';
 import '../../state/instrument_type.dart';
+import '../../state/musician_roles.dart';
 import '../instrument_visuals.dart';
 import '../palette.dart';
 import '../widgets/bus_picker.dart';
@@ -44,6 +45,7 @@ class _MixerScreenState extends State<MixerScreen> {
     _loadBoosts();
     _loadMaster();
     _loadProtection();
+    _loadOwnChannel();
   }
 
   Future<void> _loadProtection() async {
@@ -112,24 +114,31 @@ class _MixerScreenState extends State<MixerScreen> {
     if (mounted) setState(() => _liveBus = bus);
   }
 
-  // Restaura o preset de gênero salvo para esta mesa (por mixerName).
-  Future<void> _loadGenre() async {
+  // Estilo fixo em Worship por enquanto (o seletor saiu da tela — ver
+  // MixerClient._genre). Ignora um gênero salvo de versões antigas.
+  void _loadGenre() {
+    if (_client.genre != Genre.worship) _client.setGenre(Genre.worship);
+  }
+
+  // "Meu canal" é por mesa+bus. Na Live (transmissão) não há papel: balanço de
+  // plateia, voz como âncora.
+  Future<void> _loadOwnChannel() async {
+    if (widget.mode.isLive) {
+      _client.ownChannel = null;
+      return;
+    }
     final mixer = _client.mixerName;
     if (mixer == null || mixer.isEmpty) return;
-    final name = await AppSettings.genreName(mixer);
-    if (!mounted) return;
-    Genre? g;
-    if (name != null) {
-      try {
-        g = Genre.values.byName(name);
-      } catch (_) {
-        g = null;
-      }
+    final ch = await AppSettings.ownChannel(mixer, _client.busIndex);
+    if (mounted) _client.ownChannel = ch;
+  }
+
+  void _setOwnChannel(int? ch) {
+    _client.ownChannel = ch;
+    final mixer = _client.mixerName;
+    if (mixer != null && mixer.isNotEmpty) {
+      AppSettings.setOwnChannel(mixer, _client.busIndex, ch);
     }
-    // Sem preset salvo para esta mesa → padrão Geral (não vaza o gênero de
-    // outra mesa que ficou no cliente em memória).
-    g ??= Genre.general;
-    if (g != _client.genre) _client.setGenre(g);
   }
 
   @override
@@ -149,6 +158,10 @@ class _MixerScreenState extends State<MixerScreen> {
     return name != null ? '$base · $name' : base;
   }
 
+  Widget? _ownPicker() => widget.mode.isLive
+      ? null
+      : _OwnChannelPicker(client: _client, onChanged: _setOwnChannel);
+
   void _showBusPicker() {
     final mode = widget.mode;
     showBusPicker(
@@ -165,6 +178,7 @@ class _MixerScreenState extends State<MixerScreen> {
       onPicked: (bus) async {
         await _client.setBus(bus);
         await _loadMaster(); // volume geral é por bus — recarrega o do novo bus
+        await _loadOwnChannel(); // meu canal também
         if (mode.isLive) {
           await AppSettings.setLiveBus(bus);
           if (mounted) setState(() => _liveBus = bus);
@@ -302,6 +316,7 @@ class _MixerScreenState extends State<MixerScreen> {
           if (isLandscape) ...[
             _ControlBar(
               client: _client,
+              ownPicker: _ownPicker(),
               present: present,
               selected: _group,
               onSelected: (g) => setState(() => _group = g),
@@ -309,7 +324,7 @@ class _MixerScreenState extends State<MixerScreen> {
             _MasterVolumeBar(
                 client: _client, isLandscape: true, onChanged: _onMasterChanged),
           ] else ...[
-            _AutoMixBar(client: _client),
+            _AutoMixBar(client: _client, ownPicker: _ownPicker()),
             _MasterVolumeBar(
                 client: _client, isLandscape: false, onChanged: _onMasterChanged),
             _GroupTabs(
@@ -410,8 +425,9 @@ class _MixerScreenState extends State<MixerScreen> {
 
 class _AutoMixBar extends StatelessWidget {
   final MixerClient client;
+  final Widget? ownPicker;
 
-  const _AutoMixBar({required this.client});
+  const _AutoMixBar({required this.client, this.ownPicker});
 
   @override
   Widget build(BuildContext context) {
@@ -425,7 +441,7 @@ class _AutoMixBar extends StatelessWidget {
         children: [
           _EqualizeControls(client: client),
           const Spacer(),
-          _GenreDropdown(client: client),
+          if (ownPicker != null) Flexible(child: ownPicker!),
         ],
       ),
     );
@@ -551,62 +567,117 @@ class _EqualizeControls extends StatelessWidget {
       );
 }
 
-// ── Genre dropdown ────────────────────────────────────────────────────────────
+// ── Meu canal ────────────────────────────────────────────────────────────────
+// O instrumento do dono deste retorno: ele sobe ("mais eu") e os outros se
+// ajustam ao papel dele (ver lib/state/musician_roles.dart). Por bus. Escondido
+// na Live (transmissão = balanço de plateia).
 
-class _GenreDropdown extends StatelessWidget {
+class _OwnChannelPicker extends StatelessWidget {
   final MixerClient client;
+  final ValueChanged<int?> onChanged;
 
-  const _GenreDropdown({required this.client});
+  const _OwnChannelPicker({required this.client, required this.onChanged});
 
   @override
   Widget build(BuildContext context) {
+    final own = client.ownChannel;
     final active = client.monitorActive;
+    final color = own != null
+        ? (active ? AppColors.green : AppColors.green.withAlpha(160))
+        : Colors.white54;
+    final label = own == null
+        ? 'Meu instrumento'
+        : 'Eu: ${client.channels[own - 1].name}';
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-      decoration: BoxDecoration(
-        border: Border.all(
-          color: active
-              ? AppColors.green.withAlpha(120)
-              : AppColors.green.withAlpha(40),
+    return InkWell(
+      borderRadius: BorderRadius.circular(20),
+      onTap: () => _pick(context),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          border: Border.all(color: color.withAlpha(own != null ? 140 : 60)),
+          borderRadius: BorderRadius.circular(20),
         ),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<Genre>(
-          value: client.genre,
-          isDense: true,
-          icon: const Icon(Icons.arrow_drop_down, size: 16, color: AppColors.green),
-          dropdownColor: AppColors.elevated,
-          onChanged: (g) {
-            if (g == null) return;
-            client.setGenre(g);
-            final mixer = client.mixerName;
-            if (mixer != null && mixer.isNotEmpty) {
-              AppSettings.setGenreName(mixer, g.name);
-            }
-          },
-          items: Genre.values
-              .map(
-                (g) => DropdownMenuItem(
-                  value: g,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.music_note, size: 13, color: AppColors.green),
-                      const SizedBox(width: 4),
-                      Text(
-                        g.label,
-                        style: const TextStyle(fontSize: 12, color: AppColors.green),
-                      ),
-                    ],
-                  ),
-                ),
-              )
-              .toList(),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              own == null
+                  ? Icons.person_outline
+                  : instrumentIcon(client.instruments[own - 1]),
+              size: 14,
+              color: color,
+            ),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 12, color: color),
+              ),
+            ),
+            Icon(Icons.arrow_drop_down, size: 16, color: color),
+          ],
         ),
       ),
     );
+  }
+
+  Future<void> _pick(BuildContext context) async {
+    final own = client.ownChannel;
+    // Só canais com instrumento conhecido — os "Ch 25" vazios não ajudam.
+    final options = [
+      for (final ch in client.channels)
+        if (client.instruments[ch.ch - 1] != InstrumentType.unknown) ch,
+    ];
+    final picked = await showModalBottomSheet<int>(
+      context: context,
+      backgroundColor: AppColors.panel,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 0, 16, 4),
+              child: Text(
+                'Qual é o seu instrumento?',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Text(
+                'Ele sobe no seu fone e os outros se ajustam ao que você '
+                'precisa ouvir pra tocar.',
+                style: TextStyle(fontSize: 12.5, color: AppColors.textSecondary),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.groups_outlined),
+              title: const Text('Nenhum (balanço geral, voz na frente)'),
+              trailing: own == null ? const Icon(Icons.check, color: AppColors.green) : null,
+              onTap: () => Navigator.pop(ctx, 0),
+            ),
+            for (final ch in options)
+              ListTile(
+                leading: Icon(instrumentIcon(client.instruments[ch.ch - 1])),
+                title: Text(ch.name),
+                subtitle: Text(
+                  '${client.instruments[ch.ch - 1].label} · '
+                  '${roleFor(client.instruments[ch.ch - 1]).label}',
+                ),
+                trailing: own == ch.ch
+                    ? const Icon(Icons.check, color: AppColors.green)
+                    : null,
+                onTap: () => Navigator.pop(ctx, ch.ch),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (picked == null) return;
+    onChanged(picked == 0 ? null : picked);
   }
 }
 
@@ -777,12 +848,14 @@ Widget _groupChip(String label, IconData icon, bool sel, VoidCallback onTap) {
 
 class _ControlBar extends StatelessWidget {
   final MixerClient client;
+  final Widget? ownPicker;
   final Set<InstrumentGroup> present;
   final InstrumentGroup? selected;
   final ValueChanged<InstrumentGroup?> onSelected;
 
   const _ControlBar({
     required this.client,
+    this.ownPicker,
     required this.present,
     required this.selected,
     required this.onSelected,
@@ -803,8 +876,10 @@ class _ControlBar extends StatelessWidget {
       child: Row(
         children: [
           _EqualizeControls(client: client),
-          const SizedBox(width: 4),
-          _GenreDropdown(client: client),
+          if (ownPicker != null) ...[
+            const SizedBox(width: 4),
+            ownPicker!,
+          ],
           if (showTabs) ...[
             const SizedBox(width: 10),
             Container(width: 1, height: 22, color: AppColors.border),

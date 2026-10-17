@@ -76,6 +76,19 @@ baixo** (~6 dB). O Equalizar resolve os dois:
    nível (e o trim) que o engine já sabia — não volta ao send de antes e não faz o
    mix saltar. Desligar o modo devolve os sends de antes e zera a memória.
 
+**Meu instrumento** (`lib/state/musician_roles.dart`): o músico escolhe o *canal*
+dele (por mesa+bus, `AppSettings.ownChannel`); o papel vem do instrumento desse
+canal. Terceira camada do alvo: `alvo = base + estilo + papel`. O canal escolhido
+sobe `kOwnChannelBoostDb` (+6; bateria +2 porque o kit todo sobe) e os outros
+seguem `kRoleDeltas` (ex.: tecladista desce guitarra/piano/outro teclado −3;
+baterista sobe kit e baixo; baixista sobe bumbo +4). Como o topo é normalizado em
+0 dB, o "meu" vira o canal mais alto. Na Live não há papel (`ownChannel = null`,
+voz como âncora). Só vale no Equalizar (o Auto-Mix contínuo ignora).
+
+**Estilo fixo em Worship:** o seletor saiu da tela — entre estilos de igreja a
+diferença é ~1–4 dB, quase só bateria. `kGenreDeltas` fica no código pra voltar
+num menu se fizer falta; um gênero salvo antigo é ignorado.
+
 Equalizar e Auto-Mix são exclusivos (`MixerClient.monitorActive`). Escritas
 internas passam por `_internal()` pra não virarem trim.
 

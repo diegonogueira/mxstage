@@ -3,6 +3,7 @@ import 'dart:math';
 import '../osc/osc_codec.dart';
 import '../state/instrument_type.dart';
 import '../state/genre_presets.dart';
+import '../state/musician_roles.dart';
 import 'auto_mix_engine.dart' show SendCommand;
 
 /// Parameters of the on-demand equalizer ("Equalizar").
@@ -151,6 +152,12 @@ class EqualizerEngine {
 
   bool protectionEnabled = true;
 
+  /// "Meu canal" — o canal do músico dono deste retorno (1-based), ou null
+  /// (sem papel: balanço de plateia, voz como âncora — ex. Live). Define o papel
+  /// ([roleFor]) e aplica "mais eu" + referências ([roleOffsetDb]). Como os
+  /// níveis medidos ficam guardados, trocar vale na hora, sem medir de novo.
+  int? ownChannel;
+
   /// Per-channel user boost (dB), on top of the style target.
   Map<int, double> boostDb = {};
 
@@ -279,9 +286,17 @@ class EqualizerEngine {
   }
 
   double _rel(int ch, List<InstrumentType> instruments, GenrePreset preset) {
-    final idx = ch - 1;
-    final type = idx < instruments.length ? instruments[idx] : InstrumentType.unknown;
-    return preset.targetFor(type);
+    InstrumentType typeOf(int c) =>
+        (c >= 1 && c <= instruments.length) ? instruments[c - 1] : InstrumentType.unknown;
+    final type = typeOf(ch);
+    final own = ownChannel;
+    return preset.targetFor(type) +
+        roleOffsetDb(
+          ch: ch,
+          type: type,
+          ownChannel: own,
+          ownType: own == null ? InstrumentType.unknown : typeOf(own),
+        );
   }
 
   /// Send (dB) of a balanced channel before master / protection.

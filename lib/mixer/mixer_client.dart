@@ -92,7 +92,10 @@ class MixerClient extends ChangeNotifier {
   // ajuste fino em vez de ser "brigado".
   bool _internalWrite = false;
   final _log = SessionLogger();
-  Genre _genre = Genre.general;
+  // Worship é o padrão fixo por enquanto (o seletor saiu da tela: entre os
+  // estilos de igreja a diferença é ~1–4 dB, quase só bateria — o reforço por
+  // canal cobre). O código dos estilos fica pra voltar num menu se fizer falta.
+  Genre _genre = Genre.worship;
 
   // Baseline send levels read from the mixer at connect time.
   // Used as the engine's clamp reference to prevent drift each time
@@ -162,6 +165,21 @@ class MixerClient extends ChangeNotifier {
 
   /// Algum modo automático está controlando os sends (Auto-Mix ou Equalizado).
   bool get monitorActive => _engine.isActive || _eq.isActive;
+
+  /// "Meu canal" (1-based) — o instrumento do dono deste retorno, base do
+  /// papel ("mais eu" + referências). null = sem papel (balanço de plateia).
+  int? get ownChannel => _eq.ownChannel;
+  set ownChannel(int? ch) {
+    final v = (ch != null && ch >= 1 && ch <= kInputChannelCount) ? ch : null;
+    if (_eq.ownChannel == v) return;
+    _eq.ownChannel = v;
+    _log.event('ownChannel', {
+      'ch': v,
+      if (v != null) 'type': instruments[v - 1].name,
+    });
+    _eqApplyNow();
+    notifyListeners();
+  }
 
   /// Proteção (só abaixa) do modo equalizado.
   bool get protectionEnabled => _eq.protectionEnabled;

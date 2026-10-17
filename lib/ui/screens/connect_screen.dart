@@ -97,8 +97,9 @@ class _ConnectScreenState extends State<ConnectScreen>
     await AppSettings.clearAll();
     if (!mounted) return;
     // Apagar a preferência não basta: o cliente ainda guarda o gênero em
-    // memória. Volta o preset ao padrão de fábrica (Geral) aqui e agora.
-    _client.setGenre(Genre.general);
+    // memória. Volta ao padrão de fábrica (Worship, sem "meu canal") agora.
+    _client.setGenre(Genre.worship);
+    _client.ownChannel = null;
     setState(() {
       _liveBus = null;
       _autoOpened = true; // não reabre um bus lembrado que acabou de ser apagado
