@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mxwise/mixer/mixer_client.dart';
 import 'package:mxwise/osc/osc_codec.dart';
 import 'package:mxwise/osc/x32_protocol.dart';
+import 'package:mxwise/state/channel_inclusion.dart';
 import 'package:mxwise/state/instrument_type.dart';
 
 void main() {
@@ -166,5 +167,22 @@ void main() {
       client.restoreMasterVolume(-3.5);
       expect(client.masterDb, -3.5);
     });
+  });
+
+  test('fora do meu fone: zera só o send do bus e devolve o da mesa ao voltar', () async {
+    client.setChannelSend(8, 0.6); // operador/músico deixou 0.6
+    await Future.delayed(const Duration(milliseconds: 50));
+    received.clear();
+    client.setChannelInclusion(8, ChannelInclusion.exclude);
+    await Future.delayed(const Duration(milliseconds: 100));
+    final off = received.where((m) => m.address == '/ch/08/mix/03/level').toList();
+    expect(off, isNotEmpty);
+    expect(off.last.args.first as double, 0.0);
+    expect(received.every((m) => m.address.endsWith('/mix/03/level')), isTrue);
+    received.clear();
+    client.setChannelInclusion(8, ChannelInclusion.auto);
+    await Future.delayed(const Duration(milliseconds: 100));
+    final back = received.where((m) => m.address == '/ch/08/mix/03/level').toList();
+    expect(back.last.args.first as double, closeTo(0.6, 0.001));
   });
 }

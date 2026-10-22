@@ -51,6 +51,19 @@ class EqualizerParams {
   /// Only send a command when the computed send moved at least this much (dB).
   final double minChangeDb;
 
+  /// Normalization anchor window (dB): only channels whose measured level is
+  /// within this much of the loudest measured channel define the top (`K`). A
+  /// quiet mic further down still gets its balanced send (bounded by the
+  /// ceiling) but can't drag the whole mix down — same lesson as the Auto-Mix
+  /// `seedAnchorRangeDb`. A real church log: a noise channel ~30 dB under the
+  /// keys became the top and pushed everyone ~25 dB down ("MUITO baixo").
+  final double anchorRangeDb;
+
+  /// Minimum number of distinct musician roles (voz, teclas, bateria, baixo…)
+  /// that must be heard for an equalization to apply. Equalizing with only the
+  /// keys playing (pre-service) balances nothing and locks a wrong level.
+  final int minRoles;
+
   const EqualizerParams({
     this.silenceFloorDb = -65.0,
     this.frameRangeDb = 40.0,
@@ -59,12 +72,16 @@ class EqualizerParams {
     this.topSendDb = 0.0,
     this.sendFloorDb = -60.0,
     this.sendCeilingDb = 10.0,
-    this.protectTriggerDb = 6.0,
-    this.protectKneeDb = 3.0,
+    // Firmer since the church log: a guitar measured in a soft passage sat
+    // 3–5 dB over target in the chorus with trigger 6 / knee 3.
+    this.protectTriggerDb = 4.0,
+    this.protectKneeDb = 1.0,
     this.protectMaxCutDb = 12.0,
     this.protectAttackDb = 2.0,
     this.protectReleaseDb = 0.5,
     this.minChangeDb = 0.25,
+    this.anchorRangeDb = 20.0,
+    this.minRoles = 2,
   });
 }
 
@@ -85,14 +102,29 @@ class EqualizeResult {
   /// Measured playing level per channel heard now (dB, gated RMS).
   final Map<int, double> levelDb;
 
+  /// Heard, but its send to this bus is off **at the mesa** — kept off (the app
+  /// never opens a channel on its own). The musician can include it ("No meu
+  /// fone"), which uses this measurement without equalizing again.
+  final List<int> parkedOff;
+
+  /// Heard, but the instrument is unknown (talkback/DM, PC, a stray mic) — not
+  /// balanced, kept as the mesa had it.
+  final List<int> unknown;
+
+  /// Too few instruments heard (< [EqualizerParams.minRoles]) — nothing applied.
+  final bool tooFew;
+
   const EqualizeResult({
     required this.balanced,
     this.remembered = const [],
     required this.unheard,
     required this.levelDb,
+    this.parkedOff = const [],
+    this.unknown = const [],
+    this.tooFew = false,
   });
 
-  bool get ok => balanced.isNotEmpty;
+  bool get ok => balanced.isNotEmpty && !tooFew;
 }
 
 /// On-demand equalizer — "ajusta todos de uma vez e depois fica quieto".
@@ -150,6 +182,24 @@ class EqualizerEngine {
   /// Last send written per channel (dB) — for change detection.
   final Map<int, double> _lastSentDb = {};
 
+  /// Channels whose send was off at the mesa when equalized (never opened
+  /// unless [forcedIn]).
+  final Set<int> _parkedOff = {};
+
+  /// Shift (dB) added to the formula `K`, so a re-equalization keeps the
+  /// monitor where it was (the band playing louder in the chorus doesn't move
+  /// the reference — re-measured channels get re-balanced *at the same ear
+  /// level*, remembered ones don't move). 0 on a fresh equalization.
+  double _kShift = 0.0;
+
+  /// "Fora do meu fone": channels the musician took out — send off, never
+  /// measured or balanced. Per mesa+bus, owned by the client.
+  Set<int> excluded = {};
+
+  /// "No meu fone": channels the musician wants even though their send is off
+  /// at the mesa (e.g. a violão the operator left at 0).
+  Set<int> forcedIn = {};
+
   bool protectionEnabled = true;
 
   /// "Meu canal" — o canal do músico dono deste retorno (1-based), ou null
@@ -182,20 +232,35 @@ class EqualizerEngine {
   }
 
   /// Ends the measurement and balances. [currentSendDb]: current send (dB) per
-  /// channel (1-based) — channels parked at/under the floor stay off, unheard
-  /// channels keep this value. Returns a result with `ok == false` (and leaves
-  /// the engine inactive) when nobody was heard.
-  EqualizeResult finish(Map<int, double> currentSendDb) {
+  /// channel (1-based) — channels parked at/under the floor stay off unless
+  /// [forcedIn], unheard channels keep this value. [instruments] (index 0 = ch1)
+  /// decides which channels are known instruments; unknown ones are never
+  /// balanced. Returns `ok == false` (and changes nothing) when too few
+  /// instruments were heard.
+  EqualizeResult finish(
+    Map<int, double> currentSendDb, {
+    List<InstrumentType> instruments = const [],
+    GenrePreset? preset,
+  }) {
     _measuring = false;
     final frames = List<List<double>>.of(_frames);
     _frames.clear();
+    InstrumentType typeOf(int ch) =>
+        ch - 1 < instruments.length ? instruments[ch - 1] : InstrumentType.unknown;
+    bool parked(int ch) {
+      final send = currentSendDb[ch];
+      return send != null && send <= params.sendFloorDb;
+    }
 
     final levels = <int, double>{};
     final unheard = <int>[];
+    final unknown = <int>[];
+    final parkedOff = <int>[];
     if (frames.isNotEmpty) {
       final n = frames.map((f) => f.length).reduce(max);
       for (var i = 0; i < n; i++) {
         final ch = i + 1;
+        if (excluded.contains(ch)) continue;
         // Samples where this channel is playing relative to the frame.
         final playing = <double>[];
         for (final f in frames) {
@@ -211,7 +276,13 @@ class EqualizerEngine {
         final peak = playing[((playing.length - 1) * 0.95).round()];
         final gated = playing.where((v) => v >= peak - params.channelGateDb).toList();
         if (gated.length < frames.length * params.minPlayingFraction) {
-          if (!_levelDb.containsKey(ch)) unheard.add(ch);
+          if (!_levelDb.containsKey(ch) && typeOf(ch) != InstrumentType.unknown) {
+            unheard.add(ch);
+          }
+          continue;
+        }
+        if (typeOf(ch) == InstrumentType.unknown) {
+          unknown.add(ch); // DM/talkback, PC… — never balanced
           continue;
         }
         // Gated RMS in the power domain (same reasoning as MeterStream).
@@ -219,33 +290,43 @@ class EqualizerEngine {
         for (final v in gated) {
           pow += _dbToPow(v);
         }
-        final level = _powToDb(pow / gated.length);
-        final send = currentSendDb[ch];
-        if (send != null && send <= params.sendFloorDb) continue; // parked off
-        levels[ch] = level;
+        levels[ch] = _powToDb(pow / gated.length);
+        if (parked(ch) && !forcedIn.contains(ch)) parkedOff.add(ch);
       }
     }
 
-    if (levels.isEmpty) {
-      // Nobody heard: keep whatever was in place (a previous equalization, if
-      // any, stays active untouched).
-      return EqualizeResult(balanced: const [], unheard: unheard, levelDb: const {});
+    final roles = {
+      for (final ch in levels.keys)
+        if (!parkedOff.contains(ch)) roleFor(typeOf(ch)),
+    };
+    final tooFew = roles.length < params.minRoles;
+    if (levels.isEmpty || tooFew) {
+      // Keep whatever was in place (a previous equalization stays untouched).
+      return EqualizeResult(
+        balanced: levels.keys.where((c) => !parkedOff.contains(c)).toList()..sort(),
+        unheard: unheard,
+        levelDb: Map.of(levels),
+        parkedOff: parkedOff,
+        unknown: unknown,
+        tooFew: true,
+      );
     }
 
     // Merge with what we already knew. Only an active engine has a memory — a
     // fresh equalization (or after [deactivate]) starts clean.
+    final merging = _active && preset != null;
+    final kBefore = merging ? _k(instruments, preset) : 0.0;
     if (!_active) {
       _levelDb.clear();
       _trimDb.clear();
+      _kShift = 0.0;
     }
-    // A channel the musician parked off since then is forgotten (never opened).
-    _levelDb.removeWhere((ch, _) {
-      final send = currentSendDb[ch];
-      return send != null && send <= params.sendFloorDb;
-    });
+    // A channel that became unknown, or excluded, is forgotten.
+    _levelDb.removeWhere((ch, _) =>
+        typeOf(ch) == InstrumentType.unknown || excluded.contains(ch));
     final remembered = [
       for (final ch in _levelDb.keys)
-        if (!levels.containsKey(ch)) ch,
+        if (!levels.containsKey(ch) && _isBalanced(ch)) ch,
     ]..sort();
     for (final ch in levels.keys) {
       _trimDb.remove(ch); // re-measured → fresh balance, no stale trim
@@ -253,18 +334,37 @@ class EqualizerEngine {
       _lastSentDb.remove(ch);
     }
     _levelDb.addAll(levels);
+    _parkedOff
+      ..removeWhere((ch) => levels.containsKey(ch))
+      ..addAll([for (final ch in levels.keys) if (parked(ch)) ch]);
     _heldSendDb.removeWhere((ch, _) => _levelDb.containsKey(ch));
     for (final e in currentSendDb.entries) {
-      if (!_levelDb.containsKey(e.key)) _heldSendDb.putIfAbsent(e.key, () => e.value);
+      _heldSendDb.putIfAbsent(e.key, () => e.value);
     }
     _active = true;
+    if (merging) {
+      // Keep the reference where it was (see [_kShift]).
+      _kShift = 0.0;
+      _kShift = kBefore - _k(instruments, preset);
+    }
     return EqualizeResult(
-      balanced: levels.keys.toList()..sort(),
+      balanced: [for (final ch in levels.keys) if (_isBalanced(ch)) ch]..sort(),
       remembered: remembered,
       unheard: unheard,
       levelDb: Map.of(levels),
+      parkedOff: parkedOff,
+      unknown: unknown,
     );
   }
+
+  /// A measured channel is balanced unless excluded, or parked off at the mesa
+  /// without being forced in.
+  bool _isBalanced(int ch) =>
+      _levelDb.containsKey(ch) &&
+      !excluded.contains(ch) &&
+      (!_parkedOff.contains(ch) || forcedIn.contains(ch));
+
+  Iterable<int> get _balancedChannels => _levelDb.keys.where(_isBalanced);
 
   void deactivate() {
     _active = false;
@@ -273,16 +373,23 @@ class EqualizerEngine {
     _trimDb.clear();
     _cutDb.clear();
     _lastSentDb.clear();
+    _parkedOff.clear();
+    _kShift = 0.0;
   }
 
   /// Balance offset `K` so the highest balanced send (style target + boost +
   /// trim − level) sits at [EqualizerParams.topSendDb].
   double _k(List<InstrumentType> instruments, GenrePreset preset) {
+    final chs = _balancedChannels.toList();
+    if (chs.isEmpty) return params.topSendDb + _kShift;
+    final loudest = chs.map((c) => _levelDb[c]!).reduce(max);
     var top = double.negativeInfinity;
-    for (final e in _levelDb.entries) {
-      top = max(top, _rel(e.key, instruments, preset) - e.value);
+    for (final ch in chs) {
+      final level = _levelDb[ch]!;
+      if (level < loudest - params.anchorRangeDb) continue; // can't anchor K
+      top = max(top, _rel(ch, instruments, preset) - level);
     }
-    return params.topSendDb - top;
+    return params.topSendDb - top + _kShift;
   }
 
   double _rel(int ch, List<InstrumentType> instruments, GenrePreset preset) {
@@ -309,7 +416,7 @@ class EqualizerEngine {
   double _masterEff(double k, List<InstrumentType> instruments, GenrePreset preset) {
     if (masterDb <= 0) return masterDb;
     var top = double.negativeInfinity;
-    for (final ch in _levelDb.keys) {
+    for (final ch in _balancedChannels) {
       top = max(top, _base(ch, k, instruments, preset));
     }
     return min(masterDb, max(0.0, params.sendCeilingDb - top));
@@ -317,10 +424,10 @@ class EqualizerEngine {
 
   /// How much the volume geral can still go up (dB) — for the UI.
   double masterHeadroomDb(List<InstrumentType> instruments, GenrePreset preset) {
-    if (!_active || _levelDb.isEmpty) return 0.0;
+    if (!_active || _balancedChannels.isEmpty) return 0.0;
     final k = _k(instruments, preset);
     var top = double.negativeInfinity;
-    for (final ch in _levelDb.keys) {
+    for (final ch in _balancedChannels) {
       top = max(top, _base(ch, k, instruments, preset));
     }
     return max(0.0, params.sendCeilingDb - top);
@@ -331,12 +438,14 @@ class EqualizerEngine {
     if (!_active) return const {};
     final k = _k(instruments, preset);
     final m = _masterEff(k, instruments, preset);
-    final out = <int, double>{};
-    for (final ch in _levelDb.keys) {
+    final out = <int, double>{..._heldSendDb};
+    for (final ch in _balancedChannels) {
       final v = _base(ch, k, instruments, preset) + m + (_cutDb[ch] ?? 0.0);
       out[ch] = v.clamp(params.sendFloorDb, params.sendCeilingDb).toDouble();
     }
-    out.addAll(_heldSendDb);
+    for (final ch in excluded) {
+      out[ch] = _kOffDb; // fora do meu fone
+    }
     return out;
   }
 
@@ -346,7 +455,8 @@ class EqualizerEngine {
   void setManualSend(
       int ch, double sendDb, List<InstrumentType> instruments, GenrePreset preset) {
     if (!_active) return;
-    if (!_levelDb.containsKey(ch)) {
+    if (excluded.contains(ch)) return;
+    if (!_isBalanced(ch)) {
       _heldSendDb[ch] = sendDb;
       _lastSentDb[ch] = sendDb;
       return;
@@ -365,7 +475,7 @@ class EqualizerEngine {
     GenrePreset preset,
   ) {
     if (!_active) return const [];
-    for (final ch in _levelDb.keys) {
+    for (final ch in _balancedChannels) {
       final i = ch - 1;
       final meter = i < meterDb.length ? meterDb[i] : -90.0;
       final excess = meter - _levelDb[ch]!;
@@ -397,6 +507,9 @@ class EqualizerEngine {
     }
     return cmds;
   }
+
+  /// Send level for "fora do meu fone" (fader all the way down).
+  static const double _kOffDb = -90.0;
 
   static double _dbToPow(double db) => pow(10, db / 10).toDouble();
   static double _powToDb(double p) => p <= 1e-12 ? -120.0 : 10 * log(p) / ln10;

@@ -7,6 +7,7 @@ import '../../osc/osc_codec.dart';
 import '../../state/app_mode.dart';
 import '../../state/app_settings.dart';
 import '../../state/genre_presets.dart';
+import '../../state/channel_inclusion.dart';
 import '../../state/instrument_type.dart';
 import '../../state/musician_roles.dart';
 import '../instrument_visuals.dart';
@@ -46,6 +47,15 @@ class _MixerScreenState extends State<MixerScreen> {
     _loadMaster();
     _loadProtection();
     _loadOwnChannel();
+    _loadInclusions();
+  }
+
+  // Canal no/fora do meu fone — por mesa+bus.
+  Future<void> _loadInclusions() async {
+    final mixer = _client.mixerName;
+    if (mixer == null || mixer.isEmpty) return;
+    final map = await AppSettings.channelInclusions(mixer, _client.busIndex);
+    if (mounted) _client.setChannelInclusions(map);
   }
 
   Future<void> _loadProtection() async {
@@ -60,16 +70,50 @@ class _MixerScreenState extends State<MixerScreen> {
     final r = _client.lastEqualizeResult;
     if (r == null || identical(r, _shownEqualize)) return;
     _shownEqualize = r;
-    String names(List<int> chs) =>
-        chs.map((c) => _client.channels[c - 1].name).join(', ');
-    final msg = !r.ok
-        ? 'Não ouvi a banda tocando. Equalize com todo mundo tocando.'
-        : 'Equalizado: ${r.balanced.length} canais.'
-            '${r.remembered.isEmpty ? '' : ' Calados agora (ajuste anterior mantido): ${names(r.remembered)}.'}'
-            '${r.unheard.isEmpty ? '' : ' Não ouvidos (como estavam): ${names(r.unheard)}.'}';
+    // Peças da bateria viram um "Bateria" só — a lista não vira um inventário.
+    String names(List<int> chs) {
+      final out = <String>[];
+      var kit = false;
+      for (final c in chs) {
+        if (isDrumKit(_client.instruments[c - 1])) {
+          if (!kit) out.add('Bateria');
+          kit = true;
+        } else {
+          out.add(_client.channels[c - 1].name);
+        }
+      }
+      return out.join(', ');
+    }
+    final parts = <String>[];
+    if (r.tooFew) {
+      parts.add(r.balanced.isEmpty
+          ? 'Não ouvi a banda tocando. Equalize com todo mundo tocando.'
+          : 'Só ouvi ${names(r.balanced)}. Equalize com a banda tocando '
+              '(pelo menos 2 instrumentos) — nada foi mudado.');
+    } else {
+      parts.add('Equalizado: ${r.balanced.length} canais.');
+      if (r.remembered.isNotEmpty) {
+        parts.add('Calados agora (ajuste anterior mantido): ${names(r.remembered)}.');
+      }
+      if (r.unheard.isNotEmpty) {
+        parts.add('Não ouvidos (como estavam): ${names(r.unheard)}.');
+      }
+    }
+    if (r.parkedOff.isNotEmpty) {
+      parts.add('Desligados na mesa pro seu bus: ${names(r.parkedOff)} — '
+          'segure o canal e toque em "No meu fone" pra incluir.');
+    }
+    if (r.unknown.isNotEmpty) {
+      parts.add('Ignorados (instrumento desconhecido): ${names(r.unknown)} — '
+          'segure o canal pra dizer o que é ou tirar do fone.');
+    }
+    final msg = parts.join(' ');
     ScaffoldMessenger.maybeOf(context)
       ?..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(msg)));
+      ..showSnackBar(SnackBar(
+        content: Text(msg),
+        duration: Duration(seconds: parts.length > 1 ? 8 : 4),
+      ));
   }
 
   // Restaura o volume geral (masterDb) salvo para esta mesa+bus. Por bus, então
@@ -211,6 +255,7 @@ class _MixerScreenState extends State<MixerScreen> {
         await _client.setBus(bus);
         await _loadMaster(); // volume geral é por bus — recarrega o do novo bus
         await _loadOwnChannel(); // meu canal também
+        await _loadInclusions(); // e quem está no/fora do fone
         if (mode.isLive) {
           await AppSettings.setLiveBus(bus);
           if (mounted) setState(() => _liveBus = bus);
@@ -248,6 +293,15 @@ class _MixerScreenState extends State<MixerScreen> {
         final mixer = _client.mixerName;
         if (mixer != null && mixer.isNotEmpty) {
           await AppSettings.setInstrumentOverride(mixer, ch.ch, type);
+        }
+      },
+      inclusion: _client.inclusionOf(ch.ch),
+      parkedAtMesa: _client.isParkedAtMesa(ch.ch),
+      onInclusionChanged: (v) async {
+        _client.setChannelInclusion(ch.ch, v);
+        final mixer = _client.mixerName;
+        if (mixer != null && mixer.isNotEmpty) {
+          await AppSettings.setChannelInclusion(mixer, _client.busIndex, ch.ch, v);
         }
       },
       boostDb: _client.channelBoostDb(ch.ch),
@@ -374,6 +428,8 @@ class _MixerScreenState extends State<MixerScreen> {
               meterDb: _client.meterDisplayDb,
               onLevelChanged: (ch, v) => _client.setChannelSend(ch, v),
               isOverridden: _client.isOverridden,
+              isExcluded: (ch) =>
+                  _client.inclusionOf(ch) == ChannelInclusion.exclude,
               boostDb: _client.channelBoostDb,
               onEditInstrument: _editInstrument,
             ),
@@ -1139,6 +1195,7 @@ class _FaderBoard extends StatelessWidget {
   final double Function(int channelIndex) meterDb;
   final void Function(int ch, double level) onLevelChanged;
   final bool Function(int ch) isOverridden;
+  final bool Function(int ch) isExcluded;
   final double Function(int ch) boostDb;
   final void Function(ChannelInfo ch) onEditInstrument;
 
@@ -1150,6 +1207,7 @@ class _FaderBoard extends StatelessWidget {
     required this.meterDb,
     required this.onLevelChanged,
     required this.isOverridden,
+    required this.isExcluded,
     required this.boostDb,
     required this.onEditInstrument,
   });
@@ -1168,7 +1226,7 @@ class _FaderBoard extends StatelessWidget {
         itemBuilder: (context, i) {
           final ch = channels[i];
           final chIdx = ch.ch - 1;
-          return _ChannelStrip(
+          final strip = _ChannelStrip(
             channel: ch,
             instrument: chIdx >= 0 && chIdx < instruments.length
                 ? instruments[chIdx]
@@ -1182,6 +1240,8 @@ class _FaderBoard extends StatelessWidget {
             onLevelChanged: (v) => onLevelChanged(ch.ch, v),
             onEditInstrument: () => onEditInstrument(ch),
           );
+          // Fora do meu fone: esmaecido (segure pra voltar).
+          return isExcluded(ch.ch) ? Opacity(opacity: 0.35, child: strip) : strip;
         },
       ),
     );

@@ -7,6 +7,7 @@ import '../engine/equalizer_engine.dart';
 import '../osc/osc_codec.dart';
 import '../osc/x32_protocol.dart';
 import '../platform/background_keepalive.dart';
+import '../state/channel_inclusion.dart';
 import '../state/channel_mapper.dart';
 import '../state/genre_presets.dart';
 import '../state/instrument_type.dart';
@@ -175,6 +176,69 @@ class MixerClient extends ChangeNotifier {
   /// `true` se o canal [ch] (1-based) já teve sinal desde a conexão — o seletor
   /// de "meu instrumento" esconde canais mudos/sem uso.
   bool channelHeard(int ch) => _heard.contains(ch);
+
+  // ── Canal no/fora do meu fone ──────────────────────────────────────────────
+  // Por bus (a UI persiste/recarrega). "Fora" zera o canal no meu retorno e o
+  // Equalizar o ignora; "No meu fone" inclui mesmo desligado na mesa. A escrita
+  // continua sendo só o send deste bus (invariante #1).
+  final Map<int, ChannelInclusion> _inclusion = {};
+
+  ChannelInclusion inclusionOf(int ch) => _inclusion[ch] ?? ChannelInclusion.auto;
+
+  /// `true` se o envio deste canal pro bus está desligado na mesa (o app não o
+  /// abre sozinho — ver [ChannelInclusion.include]).
+  bool isParkedAtMesa(int ch) {
+    final f = _baselineLevels[ch] ?? channels[ch - 1].sendLevel;
+    return floatToDb(f) <= -60.0;
+  }
+
+  void setChannelInclusion(int ch, ChannelInclusion v) {
+    if (ch < 1 || ch > kInputChannelCount || inclusionOf(ch) == v) return;
+    final wasOut = inclusionOf(ch) == ChannelInclusion.exclude;
+    if (v == ChannelInclusion.auto) {
+      _inclusion.remove(ch);
+    } else {
+      _inclusion[ch] = v;
+    }
+    _syncInclusion();
+    _log.event('inclusion', {'ch': ch, 'v': v.name});
+    if (_eq.isActive) {
+      _eqApplyNow();
+    } else if (_connected && !_muted) {
+      // Fora de um modo: zera / devolve o envio da mesa direto (sem mexer no
+      // baseline, que é o que o operador deixou).
+      if (v == ChannelInclusion.exclude) {
+        _internal(() => setChannelSend(ch, 0.0));
+      } else if (wasOut) {
+        final base = _baselineLevels[ch];
+        if (base != null) _internal(() => setChannelSend(ch, base));
+      }
+    }
+    notifyListeners();
+  }
+
+  /// Carga em lote (troca de bus / connect). Não registra evento.
+  void setChannelInclusions(Map<int, ChannelInclusion> map) {
+    _inclusion
+      ..clear()
+      ..addAll(map);
+    _syncInclusion();
+    _eqApplyNow();
+    notifyListeners();
+  }
+
+  void _syncInclusion() {
+    _eq.excluded = {
+      for (final e in _inclusion.entries)
+        if (e.value == ChannelInclusion.exclude) e.key,
+    };
+    _eq.forcedIn = {
+      for (final e in _inclusion.entries)
+        if (e.value == ChannelInclusion.include) e.key,
+    };
+  }
+
+  bool _isExcluded(int ch) => inclusionOf(ch) == ChannelInclusion.exclude;
 
   /// "Meu canal" (1-based) — o instrumento do dono deste retorno, base do
   /// papel ("mais eu" + referências). null = sem papel (balanço de plateia).
@@ -436,7 +500,7 @@ class MixerClient extends ChangeNotifier {
       // the new baseline and compound the drift each activation cycle.
       _internal(() {
         for (final entry in _baselineLevels.entries) {
-          setChannelSend(entry.key, entry.value);
+          setChannelSend(entry.key, _isExcluded(entry.key) ? 0.0 : entry.value);
         }
       });
     }
@@ -480,6 +544,7 @@ class MixerClient extends ChangeNotifier {
     );
     _internal(() {
       for (final cmd in cmds) {
+        if (_isExcluded(cmd.ch)) continue; // fora do meu fone
         setChannelSend(cmd.ch, cmd.levelFloat);
       }
     });
@@ -490,6 +555,7 @@ class MixerClient extends ChangeNotifier {
     // fader to the engine's tracked level so the manual drag doesn't "stick".
     if (!_muted) {
       for (final entry in _engine.currentSendFloats.entries) {
+        if (_isExcluded(entry.key)) continue;
         final idx = entry.key - 1;
         if (idx >= 0 && idx < channels.length) {
           if ((entry.value - channels[idx].sendLevel).abs() > 0.005) {
@@ -551,7 +617,8 @@ class MixerClient extends ChangeNotifier {
       for (final ch in channels)
         ch.ch: floatToDb(_baselineLevels[ch.ch] ?? ch.sendLevel),
     };
-    final r = _eq.finish(current);
+    final r = _eq.finish(current,
+        instruments: instruments, preset: kGenrePresets[_genre]!);
     _lastEqualize = r;
     _log.event('equalize', {
       'ok': r.ok,
@@ -559,6 +626,9 @@ class MixerClient extends ChangeNotifier {
       'level': {for (final e in r.levelDb.entries) '${e.key}': e.value},
       'remembered': r.remembered,
       'unheard': r.unheard,
+      'parkedOff': r.parkedOff,
+      'unknown': r.unknown,
+      'tooFew': r.tooFew,
     });
     if (!r.ok) {
       notifyListeners();
@@ -604,7 +674,7 @@ class MixerClient extends ChangeNotifier {
     if (_connected && !_muted) {
       _internal(() {
         for (final entry in _baselineLevels.entries) {
-          setChannelSend(entry.key, entry.value);
+          setChannelSend(entry.key, _isExcluded(entry.key) ? 0.0 : entry.value);
         }
       });
     }
@@ -704,6 +774,8 @@ class MixerClient extends ChangeNotifier {
     _baselineLevels.clear();
     _overrides.clear();
     _heard.clear();
+    _inclusion.clear();
+    _syncInclusion();
     _engine.boostDb.clear();
     _muted = false;
     _preMuteLevels.clear();
@@ -743,7 +815,9 @@ class MixerClient extends ChangeNotifier {
 
     // Manual fader adjustments (made while auto-mix is OFF) update the
     // baseline so the next auto-mix activation uses the user's intent as ref.
-    if (!_engine.isActive && !_eq.isActive) {
+    // (Escritas internas — mute, "fora do meu fone" — não são intenção do
+    // operador e não viram baseline.)
+    if (!_engine.isActive && !_eq.isActive && !_internalWrite) {
       _baselineLevels[ch] = level;
     }
 

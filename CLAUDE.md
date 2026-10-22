@@ -64,17 +64,32 @@ baixo** (~6 dB). O Equalizar resolve os dois:
    amostras até 15 dB abaixo dele; RMS em potência. <15% da janela ⇒ "não ouvido".
 3. `send = K + alvo(instrumento) − nível`, com `K` tal que o maior send = 0 dB
    (empurra o mix pra cima; sobram +10 dB pro volume geral, que é limitado pela
-   folga até o teto pra não quebrar o balanço).
+   folga até o teto pra não quebrar o balanço). Só canais a ≤`anchorRangeDb`
+   (20 dB) do mais alto definem `K` — um mic muito baixo não afunda o mix.
+   **Canal de instrumento desconhecido nunca é equalizado** (fica como a mesa
+   deixou) e menos de `minRoles` (2) papéis ouvidos ⇒ `tooFew`, nada aplicado.
+   Log real 21/10: o DM (talkback, ruído −60 dB, "unknown") virou o topo → DM
+   +10 dB e o resto ~25 dB abaixo ("MUITO baixo"); e equalizar só com o teclado
+   tocando (pré-culto) travava um balanço vazio.
 4. Depois **fica parado**. Estilo, reforço, volume geral e troca de instrumento
    recalculam na hora a partir dos níveis guardados (sem medir de novo). Fader
    manual vira ajuste fino (trim), não é brigado.
 5. **Proteção** (opcional, escudo na UI, `AppSettings.protection`): só **abaixa**
-   um canal que ficou >6 dB acima do medido (corta até +3, attack 2 dB/s,
+   um canal que ficou >4 dB acima do medido (corta até +1, attack 2 dB/s,
    release 0,5 dB/s, máx. 12 dB) e devolve só até o nível equalizado. **Nada sobe
    sozinho, nunca.**
 6. **Reequalizar mescla**: quem tocou é re-medido; quem estava calado mantém o
    nível (e o trim) que o engine já sabia — não volta ao send de antes e não faz o
-   mix saltar. Desligar o modo devolve os sends de antes e zera a memória.
+   mix saltar. A referência fica **travada** na mescla (`_kShift`): a banda mais
+   forte no refrão não sobe os lembrados (log: a guitarra lembrada subia +5 e
+   ficava alta). Desligar o modo devolve os sends de antes e zera a memória.
+7. **Canal no/fora do meu fone** (`ChannelInclusion`, por mesa+bus,
+   `AppSettings.channelInclusions`; segurar o canal): "Como na mesa" (padrão —
+   envio desligado na mesa continua desligado; o Equalizar avisa em
+   `parkedOff`), "No meu fone" (`forcedIn`: inclui e equaliza mesmo desligado na
+   mesa — o violão a 0,05 do log) e "Fora" (`excluded`: send 0, ignorado pelo
+   Equalizar e pelo Auto-Mix; restaurar baseline não o reabre). Escritas internas
+   não viram baseline.
 
 **Meu instrumento** (`lib/state/musician_roles.dart`): o músico escolhe o *canal*
 dele (por mesa+bus, `AppSettings.ownChannel`); o papel vem do instrumento desse
@@ -94,6 +109,9 @@ bateria = kit → "Ministro" = voz principal → tipo com canal único; ambíguo
 nada). Sugestão não é gravada; "Nenhum" grava 0 (escolha explícita).
 
 **Barra:** uma faixa só, à esquerda, na ordem de uso — `[Eu: … ▾] [Equalizar | ✨] [🛡 Proteção]`, tudo com `_kCtlHeight` 36 / cantos de pílula. Botão duplo (`_SplitModeButton`): Equalizar à esquerda, Auto-Mix contínuo acoplado. "Desligar equalização" fica no ⋮ do topo (raro e perigoso de tocar sem querer).
+
+**Detecção de instrumento: nome antes do ícone** (`ChannelMapper`) — na X32
+real a tabela de ícones errou quase tudo ("Bumbo" → vocal, "Bass" → hi-hat).
 
 **Estilo fixo em Worship:** o seletor saiu da tela — entre estilos de igreja a
 diferença é ~1–4 dB, quase só bateria. `kGenreDeltas` fica no código pra voltar

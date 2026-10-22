@@ -14,6 +14,7 @@ List<InstrumentType> _instr() {
   l[2] = InstrumentType.guitar;
   l[3] = InstrumentType.bass;
   l[4] = InstrumentType.kick;
+  l[5] = InstrumentType.piano; // só toca nos testes que pedem
   return l;
 }
 
@@ -32,7 +33,7 @@ void main() {
     for (var t = 0; t < 75; t++) {
       e.addSample(_frame(frameAt?.call(t) ?? _play));
     }
-    expect(e.finish(_sendsAt(0.0)).ok, isTrue);
+    expect(e.finish(_sendsAt(0.0), instruments: instr, preset: preset).ok, isTrue);
     return e;
   }
 
@@ -60,7 +61,7 @@ void main() {
     for (var t = 0; t < 75; t++) {
       e.addSample(_frame([..._play, t == 3 ? -30.0 : -90.0])); // ch6: 1 frame só
     }
-    final r = e.finish(_sendsAt(-5.0));
+    final r = e.finish(_sendsAt(-5.0), instruments: instr, preset: preset);
     expect(r.unheard, contains(6));
     expect(e.targetSendsDb(instr, preset)[6], -5.0);
   });
@@ -71,7 +72,7 @@ void main() {
       e.addSample(_frame(_play));
     }
     final sends = _sendsAt(0.0)..[3] = -90.0;
-    e.finish(sends);
+    e.finish(sends, instruments: instr, preset: preset);
     expect(e.targetSendsDb(instr, preset)[3], -90.0);
   });
 
@@ -80,7 +81,7 @@ void main() {
     for (var t = 0; t < 75; t++) {
       e.addSample(_frame(const []));
     }
-    expect(e.finish(_sendsAt(0.0)).ok, isFalse);
+    expect(e.finish(_sendsAt(0.0), instruments: instr, preset: preset).ok, isFalse);
     expect(e.isActive, isFalse);
   });
 
@@ -104,8 +105,8 @@ void main() {
       final f = List.of(_play)..[2] = _play[2] + 12;
       e.tick(_frame(f), instr, preset);
     }
-    // Corta até sobrar só o joelho (+3 dB).
-    expect(e.targetSendsDb(instr, preset)[3], closeTo(base - 9, 0.01));
+    // Corta até sobrar só o joelho (+1 dB).
+    expect(e.targetSendsDb(instr, preset)[3], closeTo(base - 11, 0.01));
     // Volta ao normal → devolve devagar até o send equalizado, nunca acima.
     for (var t = 0; t < 30; t++) {
       e.tick(_frame(_play), instr, preset);
@@ -159,7 +160,7 @@ void main() {
         final f = [for (final v in _play) v + shift]..[silentCh - 1] = -90.0;
         e.addSample(_frame(f));
       }
-      final r = e.finish(_sendsAt(0.0));
+      final r = e.finish(_sendsAt(0.0), instruments: instr, preset: preset);
       expect(r.remembered, [silentCh]);
       expect(r.unheard, isEmpty);
       return e;
@@ -182,23 +183,19 @@ void main() {
       }
     });
 
-    test('quem foi re-medido atualiza; o calado segue lembrado', () {
+    test('reequalizar não move o fone: re-medido rebalanceia, lembrado parado', () {
       final e = equalized();
       final before = e.targetSendsDb(instr, preset);
-      // Operador subiu 4 dB de ganho em todo mundo; guitarra calada.
+      // Banda tocando 4 dB mais forte (refrão); guitarra calada na hora.
       reequalized(e, 3, shift: 4);
       expect(e.levelDb[1], closeTo(_play[0] + 4, 0.01));
       expect(e.levelDb[3], closeTo(_play[2], 0.01)); // lembrado
-      // O topo segue em 0 dB, então os re-medidos mantêm o send (chegam 4 dB
-      // mais fortes no fone) e a guitarra lembrada acompanha (+4 no send): o
-      // balanço do estilo no fone continua cravado.
+      // A referência fica travada: quem está 4 dB mais forte desce 4 no send
+      // (mesmo nível no fone) e a guitarra lembrada não se mexe — antes ela
+      // subia junto e ficava alta quando voltava (log da igreja).
       final after = e.targetSendsDb(instr, preset);
-      expect(after[2], closeTo(before[2]!, 0.01));
-      expect(after[3]! - before[3]!, closeTo(4, 0.01));
-      final earVoz = _play[0] + 4 + after[1]!;
-      final earGuit = _play[2] + after[3]!;
-      expect(earGuit - earVoz,
-          closeTo(preset.targetFor(InstrumentType.guitar), 0.01));
+      expect(after[2]! - before[2]!, closeTo(-4, 0.01));
+      expect(after[3], closeTo(before[3]!, 0.01));
     });
 
     test('ajuste fino do calado é preservado; o do re-medido zera', () {
@@ -218,7 +215,7 @@ void main() {
       for (var t = 0; t < 75; t++) {
         e.addSample(_frame(List.of(_play)..[2] = -90.0));
       }
-      final r = e.finish(_sendsAt(0.0));
+      final r = e.finish(_sendsAt(0.0), instruments: instr, preset: preset);
       expect(r.remembered, isEmpty);
       expect(e.targetSendsDb(instr, preset)[3], 0.0); // send original
     });
@@ -263,6 +260,82 @@ void main() {
       e.ownChannel = 3;
       final cmds = e.tick(_frame(_play), instr, preset);
       expect(cmds, isNotEmpty);
+    });
+  });
+
+  group('casos do culto (log 21/10)', () {
+    EqualizerEngine measure(List<double> five, {Map<int, double>? sends,
+        List<InstrumentType>? types, void Function(EqualizerEngine)? setup}) {
+      final e = EqualizerEngine();
+      setup?.call(e);
+      e.startMeasure();
+      for (var t = 0; t < 75; t++) {
+        e.addSample(_frame(five));
+      }
+      e.finish(sends ?? _sendsAt(0.0), instruments: types ?? instr, preset: preset);
+      return e;
+    }
+
+    test('canal desconhecido (DM com ruído) não é equalizado nem afunda o mix', () {
+      final types = List.of(instr)..[5] = InstrumentType.unknown;
+      final clean = measure(_play, types: types);
+      final withDm = measure([..._play, -60.0], types: types);
+      expect(withDm.levelDb.containsKey(6), isFalse);
+      final a = clean.targetSendsDb(types, preset), b = withDm.targetSendsDb(types, preset);
+      for (var ch = 1; ch <= 5; ch++) {
+        expect(b[ch], closeTo(a[ch]!, 0.01), reason: 'ch$ch');
+      }
+      expect(b[6], 0.0); // fica como a mesa tinha
+    });
+
+    test('um mic muito baixo não puxa o mix inteiro pra baixo', () {
+      final types = List.of(instr)..[5] = InstrumentType.backingVocal;
+      final clean = measure(_play, types: types);
+      final quiet = measure([..._play, -58.0], types: types); // 40 dB abaixo do bumbo
+      final a = clean.targetSendsDb(types, preset), b = quiet.targetSendsDb(types, preset);
+      expect(b[1], closeTo(a[1]!, 0.01)); // voz não afundou
+      expect(b[6]! <= 10.0, isTrue); // o baixinho vai até o teto, no máximo
+    });
+
+    test('só o teclado tocando → avisa e não aplica', () {
+      final e = EqualizerEngine()..startMeasure();
+      for (var t = 0; t < 75; t++) {
+        e.addSample(_frame([-90, -28, -90, -90, -90]));
+      }
+      final r = e.finish(_sendsAt(0.0), instruments: instr, preset: preset);
+      expect(r.tooFew, isTrue);
+      expect(r.ok, isFalse);
+      expect(e.isActive, isFalse);
+    });
+
+    test('desligado na mesa: avisa, fica off; "No meu fone" inclui sem medir de novo', () {
+      final sends = _sendsAt(0.0)..[3] = -66.0; // violão a 0,05 na mesa
+      final e = measure(_play, sends: sends);
+      expect(e.targetSendsDb(instr, preset)[3], -66.0);
+      e.forcedIn = {3};
+      final s2 = e.targetSendsDb(instr, preset);
+      expect(_play[2] + s2[3]! - (_play[0] + s2[1]!),
+          closeTo(preset.targetFor(InstrumentType.guitar), 0.01));
+    });
+
+    test('"Fora do meu fone": zera o canal e não é medido', () {
+      final e = measure(_play, setup: (e) => e.excluded = {5});
+      expect(e.levelDb.containsKey(5), isFalse);
+      expect(e.targetSendsDb(instr, preset)[5], -90.0);
+      e.excluded = {};
+      expect(e.targetSendsDb(instr, preset)[5], 0.0); // volta ao da mesa
+    });
+
+    test('resultado lista desligados na mesa e desconhecidos', () {
+      final types = List.of(instr)..[5] = InstrumentType.unknown;
+      final e = EqualizerEngine()..startMeasure();
+      for (var t = 0; t < 75; t++) {
+        e.addSample(_frame([..._play, -40.0]));
+      }
+      final r = e.finish(_sendsAt(0.0)..[3] = -90.0, instruments: types, preset: preset);
+      expect(r.parkedOff, [3]);
+      expect(r.unknown, [6]);
+      expect(r.balanced, isNot(contains(3)));
     });
   });
 

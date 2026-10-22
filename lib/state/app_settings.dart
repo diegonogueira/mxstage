@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'channel_inclusion.dart';
 import 'instrument_type.dart';
 
 /// Persistência leve de preferências do app (`shared_preferences`).
@@ -33,6 +34,8 @@ class AppSettings {
   static String _masterKey(String mixer, int bus) => 'master_db:$mixer:$bus';
   // "Meu canal" também é por bus: cada retorno é de um músico.
   static String _ownKey(String mixer, int bus) => 'own_ch:$mixer:$bus';
+  // Canal dentro/fora do meu fone — por bus, como o "meu canal".
+  static String _inclKey(String mixer, int bus) => 'ch_incl:$mixer:$bus';
 
   /// Bus atualmente designado como o da transmissão, ou `null` se nunca definido.
   static Future<int?> liveBus() async {
@@ -258,6 +261,52 @@ class AppSettings {
     await prefs.setInt(_ownKey(mixer, bus), ch ?? 0);
   }
 
+  // ── Canal no/fora do meu fone, por mesa+bus ──────────────────────────────
+
+  /// Canais com escolha manual (ausente = [ChannelInclusion.auto]).
+  static Future<Map<int, ChannelInclusion>> channelInclusions(
+      String mixer, int bus) async {
+    if (mixer.isEmpty) return {};
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_inclKey(mixer, bus));
+    if (raw == null || raw.isEmpty) return {};
+    final result = <int, ChannelInclusion>{};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        decoded.forEach((key, value) {
+          final ch = int.tryParse(key.toString());
+          if (ch == null || value is! String) return;
+          try {
+            final v = ChannelInclusion.values.byName(value);
+            if (v != ChannelInclusion.auto) result[ch] = v;
+          } catch (_) {}
+        });
+      }
+    } catch (_) {
+      return {};
+    }
+    return result;
+  }
+
+  static Future<void> setChannelInclusion(
+      String mixer, int bus, int ch, ChannelInclusion v) async {
+    if (mixer.isEmpty) return;
+    final map = await channelInclusions(mixer, bus);
+    if (v == ChannelInclusion.auto) {
+      map.remove(ch);
+    } else {
+      map[ch] = v;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    if (map.isEmpty) {
+      await prefs.remove(_inclKey(mixer, bus));
+      return;
+    }
+    await prefs.setString(_inclKey(mixer, bus),
+        jsonEncode({for (final e in map.entries) '${e.key}': e.value.name}));
+  }
+
   /// Apaga TODAS as preferências que o app grava (Live bus + bus/gênero/overrides
   /// por mesa). Remove só as nossas chaves — não toca em prefs de plugins.
   static Future<void> clearAll() async {
@@ -271,7 +320,8 @@ class AppSettings {
               k.startsWith('instr_override:') ||
               k.startsWith('ch_boost:') ||
               k.startsWith('master_db:') ||
-              k.startsWith('own_ch:'),
+              k.startsWith('own_ch:') ||
+              k.startsWith('ch_incl:'),
         );
     for (final k in ours.toList()) {
       await prefs.remove(k);

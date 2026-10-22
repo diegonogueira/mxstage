@@ -3,25 +3,30 @@ import 'instrument_type.dart';
 /// Identifies instrument type for an X32 channel using icon, name, and color.
 ///
 /// Strategy (confidence descending):
-///   1. Icon number → mapped type  (engineer-set, reliable)
-///   2. Fuzzy name match PT-BR/EN  (covers abbreviations and typos)
+///   1. Fuzzy name match PT-BR/EN  (what the operator typed — "Bumbo", "Bass")
+///   2. Icon number → mapped type  (our icon table is unconfirmed on hardware)
 ///   3. Color category hint        (green=vocals, blue=keys, red=drums, etc.)
 ///   4. unknown                    (user corrects manually)
+///
+/// Name comes first since the 21/10 church log: on the real X32 the icon table
+/// got almost every channel wrong ("Bumbo" → vocal, "Bass" → hi-hat, "Guitar" →
+/// drums) while the names were plain. CONFIRM the icon IDs against hardware
+/// before trusting them again.
 class ChannelMapper {
   static InstrumentType identify({
     required String name,
     int? iconId,
     int? colorId,
   }) {
-    // 1. Icon — most reliable
+    // 1. Name fuzzy match — the operator's own label
+    final fromName = _fromName(name);
+    if (fromName != InstrumentType.unknown) return fromName;
+
+    // 2. Icon
     if (iconId != null && iconId > 0) {
       final fromIcon = _fromIcon(iconId);
       if (fromIcon != InstrumentType.unknown) return fromIcon;
     }
-
-    // 2. Name fuzzy match
-    final fromName = _fromName(name);
-    if (fromName != InstrumentType.unknown) return fromName;
 
     // 3. Color hint
     if (colorId != null) {
@@ -76,10 +81,10 @@ class ChannelMapper {
     if (_any(n, ['kick', 'bumbo', 'bd', 'bass drum'])) return InstrumentType.kick;
     if (_any(n, ['snare', 'caixa', 'sd'])) return InstrumentType.snare;
     if (_any(n, ['hihat', 'hi-hat', 'hh', 'hat'])) return InstrumentType.hihat;
-    if (_any(n, ['overhead', 'oh ', ' oh', 'pratos', 'cymbal', 'cymb'])) {
+    if (_any(n, ['overhead', 'over', 'oh ', ' oh', 'pratos', 'cymbal', 'cymb'])) {
       return InstrumentType.overhead;
     }
-    if (_any(n, ['tom', 'floor', 'rack'])) return InstrumentType.percussion;
+    if (_any(n, ['tom', 'floor', 'rack', 'surdo'])) return InstrumentType.percussion;
     if (_any(n, ['bat', 'drum', 'perc', 'room', 'ambience'])) return InstrumentType.drums;
 
     // Strings / guitar family

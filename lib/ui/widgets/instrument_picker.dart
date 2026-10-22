@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../state/channel_inclusion.dart';
 import '../../state/instrument_type.dart';
 import '../instrument_visuals.dart';
 import '../palette.dart';
@@ -22,6 +23,9 @@ Future<void> showInstrumentPicker(
   required void Function(InstrumentType? type) onSelected,
   required double boostDb,
   required void Function(double db) onBoostChanged,
+  ChannelInclusion inclusion = ChannelInclusion.auto,
+  bool parkedAtMesa = false,
+  void Function(ChannelInclusion v)? onInclusionChanged,
 }) {
   return showModalBottomSheet<void>(
     context: context,
@@ -37,6 +41,7 @@ Future<void> showInstrumentPicker(
       }
 
       double boost = boostDb;
+      var incl = inclusion;
       return StatefulBuilder(
         builder: (ctx, setSheet) => SafeArea(
         child: ConstrainedBox(
@@ -75,6 +80,15 @@ Future<void> showInstrumentPicker(
                   style: TextStyle(fontSize: 11, color: Colors.white38),
                 ),
               ),
+              if (onInclusionChanged != null)
+                _InclusionControl(
+                  value: incl,
+                  parkedAtMesa: parkedAtMesa,
+                  onChanged: (v) {
+                    setSheet(() => incl = v);
+                    onInclusionChanged(v);
+                  },
+                ),
               _BoostControl(
                 value: boost,
                 onChanged: (v) {
@@ -297,6 +311,77 @@ class _InstrumentChip extends StatelessWidget {
 /// Controle de reforço do canal (dB): quanto MAIS (ou menos) o músico quer ouvir
 /// este canal, sobre o alvo do estilo. Verde = +, âmbar = −. Vive dentro do
 /// mesmo bottom-sheet do tipo de instrumento.
+// No meu fone? — "Como na mesa" (segue o operador), "No meu fone" (inclui mesmo
+// desligado na mesa — o violão do culto de 21/10) ou "Fora do meu fone" (zera e
+// o Equalizar ignora — o DM/talkback que chiava).
+class _InclusionControl extends StatelessWidget {
+  final ChannelInclusion value;
+  final bool parkedAtMesa;
+  final ValueChanged<ChannelInclusion> onChanged;
+
+  const _InclusionControl({
+    required this.value,
+    required this.parkedAtMesa,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    Widget chip(ChannelInclusion v, String label, IconData icon, Color color) {
+      final sel = value == v;
+      return Expanded(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 3),
+          child: ChoiceChip(
+            showCheckmark: false,
+            selected: sel,
+            onSelected: (_) => onChanged(v),
+            avatar: Icon(icon, size: 15, color: sel ? Colors.black : color),
+            label: Text(label, overflow: TextOverflow.ellipsis),
+            labelStyle: TextStyle(
+                fontSize: 12, color: sel ? Colors.black : Colors.white70),
+            selectedColor: color,
+            backgroundColor: AppColors.elevated,
+            side: BorderSide(color: sel ? Colors.transparent : AppColors.border),
+            visualDensity: VisualDensity.compact,
+          ),
+        ),
+      );
+    }
+
+    final hint = switch (value) {
+      ChannelInclusion.exclude => 'Zerado no seu fone. O Equalizar ignora este canal.',
+      ChannelInclusion.include => parkedAtMesa
+          ? 'Desligado na mesa pro seu bus, mas o app inclui e equaliza.'
+          : 'Sempre incluído e equalizado.',
+      ChannelInclusion.auto => parkedAtMesa
+          ? 'Desligado na mesa pro seu bus — o app não abre sozinho. '
+              'Toque em "No meu fone" pra incluir.'
+          : 'Segue o envio que o operador deixou na mesa.',
+    };
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(13, 4, 13, 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            chip(ChannelInclusion.auto, 'Como na mesa', Icons.tune, AppColors.blue),
+            chip(ChannelInclusion.include, 'No meu fone', Icons.headphones,
+                AppColors.green),
+            chip(ChannelInclusion.exclude, 'Fora', Icons.headset_off, AppColors.amber),
+          ]),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(4, 4, 4, 0),
+            child: Text(hint,
+                style: const TextStyle(fontSize: 11, color: Colors.white38)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _BoostControl extends StatelessWidget {
   final double value;
   final ValueChanged<double> onChanged;
