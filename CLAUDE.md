@@ -67,7 +67,9 @@ baixo** (~6 dB). O Equalizar resolve os dois:
    folga até o teto pra não quebrar o balanço). Só canais a ≤`anchorRangeDb`
    (20 dB) do mais alto definem `K` — um mic muito baixo não afunda o mix.
    **Canal de instrumento desconhecido nunca é equalizado** (fica como a mesa
-   deixou) e menos de `minRoles` (2) papéis ouvidos ⇒ `tooFew`, nada aplicado.
+   deixou). Nenhum instrumento conhecido ouvido ⇒ `tooFew`, nada aplicado; menos
+   de `partialBelowRoles` (2) papéis ⇒ aplica mas marca `partial` (músico que
+   chega antes se ouve; a UI pede Reequalizar quando a banda entrar).
    Log real 21/10: o DM (talkback, ruído −60 dB, "unknown") virou o topo → DM
    +10 dB e o resto ~25 dB abaixo ("MUITO baixo"); e equalizar só com o teclado
    tocando (pré-culto) travava um balanço vazio.
@@ -109,6 +111,12 @@ bateria = kit → "Ministro" = voz principal → tipo com canal único; ambíguo
 nada). Sugestão não é gravada; "Nenhum" grava 0 (escolha explícita).
 
 **Barra:** uma faixa só, à esquerda, na ordem de uso — `[Eu: … ▾] [Equalizar | ✨] [🛡 Proteção]`, tudo com `_kCtlHeight` 36 / cantos de pílula. Botão duplo (`_SplitModeButton`): Equalizar à esquerda, Auto-Mix contínuo acoplado. "Desligar equalização" fica no ⋮ do topo (raro e perigoso de tocar sem querer).
+
+**Mapear canais** (`lib/ui/screens/channel_map_screen.dart`, menu ⋮): lista em
+grupos (sem instrumento no topo), ponto verde de sinal, tipo (por mesa) e No
+fone/Fora (por bus), "Todos fora" por grupo; canais sem nome escondidos. Abre
+sozinha uma vez por mesa (`AppSettings.channelMapReviewed`) se houver canal com
+nome mas sem instrumento (Stage; não na Live).
 
 **Detecção de instrumento: nome antes do ícone** (`ChannelMapper`) — na X32
 real a tabela de ícones errou quase tudo ("Bumbo" → vocal, "Bass" → hi-hat).

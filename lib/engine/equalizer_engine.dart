@@ -59,10 +59,12 @@ class EqualizerParams {
   /// keys became the top and pushed everyone ~25 dB down ("MUITO baixo").
   final double anchorRangeDb;
 
-  /// Minimum number of distinct musician roles (voz, teclas, bateria, baixo…)
-  /// that must be heard for an equalization to apply. Equalizing with only the
-  /// keys playing (pre-service) balances nothing and locks a wrong level.
-  final int minRoles;
+  /// Below this many distinct musician roles (voz, teclas, bateria, baixo…)
+  /// heard, the equalization still applies but is flagged [EqualizeResult.partial]
+  /// — a musician who arrives early must be able to hear himself; the UI asks
+  /// to Reequalizar when the band comes in (the locked reference keeps him where
+  /// he is and the others land around him).
+  final int partialBelowRoles;
 
   const EqualizerParams({
     this.silenceFloorDb = -65.0,
@@ -81,7 +83,7 @@ class EqualizerParams {
     this.protectReleaseDb = 0.5,
     this.minChangeDb = 0.25,
     this.anchorRangeDb = 20.0,
-    this.minRoles = 2,
+    this.partialBelowRoles = 2,
   });
 }
 
@@ -111,8 +113,12 @@ class EqualizeResult {
   /// balanced, kept as the mesa had it.
   final List<int> unknown;
 
-  /// Too few instruments heard (< [EqualizerParams.minRoles]) — nothing applied.
+  /// No known instrument heard — nothing applied.
   final bool tooFew;
+
+  /// Applied, but fewer than [EqualizerParams.partialBelowRoles] roles were
+  /// heard (e.g. only the keys warming up) — re-equalize when the band enters.
+  final bool partial;
 
   const EqualizeResult({
     required this.balanced,
@@ -122,6 +128,7 @@ class EqualizeResult {
     this.parkedOff = const [],
     this.unknown = const [],
     this.tooFew = false,
+    this.partial = false,
   });
 
   bool get ok => balanced.isNotEmpty && !tooFew;
@@ -299,8 +306,8 @@ class EqualizerEngine {
       for (final ch in levels.keys)
         if (!parkedOff.contains(ch)) roleFor(typeOf(ch)),
     };
-    final tooFew = roles.length < params.minRoles;
-    if (levels.isEmpty || tooFew) {
+    final tooFew = roles.isEmpty;
+    if (tooFew) {
       // Keep whatever was in place (a previous equalization stays untouched).
       return EqualizeResult(
         balanced: levels.keys.where((c) => !parkedOff.contains(c)).toList()..sort(),
@@ -354,6 +361,7 @@ class EqualizerEngine {
       levelDb: Map.of(levels),
       parkedOff: parkedOff,
       unknown: unknown,
+      partial: roles.length < params.partialBelowRoles,
     );
   }
 

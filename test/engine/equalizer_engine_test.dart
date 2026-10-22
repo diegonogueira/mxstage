@@ -297,14 +297,33 @@ void main() {
       expect(b[6]! <= 10.0, isTrue); // o baixinho vai até o teto, no máximo
     });
 
-    test('só o teclado tocando → avisa e não aplica', () {
+    test('só o teclado tocando → aplica (músico chegou antes) e marca parcial', () {
       final e = EqualizerEngine()..startMeasure();
       for (var t = 0; t < 75; t++) {
         e.addSample(_frame([-90, -28, -90, -90, -90]));
       }
       final r = e.finish(_sendsAt(0.0), instruments: instr, preset: preset);
+      expect(r.ok, isTrue);
+      expect(r.partial, isTrue);
+      expect(e.targetSendsDb(instr, preset)[2], closeTo(0, 0.01)); // ele no topo
+    });
+
+    test('voz + piano já não é parcial', () {
+      final e = EqualizerEngine()..startMeasure();
+      for (var t = 0; t < 75; t++) {
+        e.addSample(_frame([-24, -90, -90, -90, -90, -30]));
+      }
+      expect(e.finish(_sendsAt(0.0), instruments: instr, preset: preset).partial, isFalse);
+    });
+
+    test('só canal desconhecido tocando → não aplica', () {
+      final types = List.of(instr)..[5] = InstrumentType.unknown;
+      final e = EqualizerEngine()..startMeasure();
+      for (var t = 0; t < 75; t++) {
+        e.addSample(_frame([-90, -90, -90, -90, -90, -40]));
+      }
+      final r = e.finish(_sendsAt(0.0), instruments: types, preset: preset);
       expect(r.tooFew, isTrue);
-      expect(r.ok, isFalse);
       expect(e.isActive, isFalse);
     });
 

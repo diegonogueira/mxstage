@@ -13,6 +13,7 @@ import '../../state/musician_roles.dart';
 import '../instrument_visuals.dart';
 import '../palette.dart';
 import '../widgets/bus_picker.dart';
+import 'channel_map_screen.dart';
 import '../widgets/instrument_picker.dart';
 import '../widgets/live_entry.dart';
 import '../widgets/mode_badge.dart';
@@ -86,10 +87,10 @@ class _MixerScreenState extends State<MixerScreen> {
     }
     final parts = <String>[];
     if (r.tooFew) {
-      parts.add(r.balanced.isEmpty
-          ? 'Não ouvi a banda tocando. Equalize com todo mundo tocando.'
-          : 'Só ouvi ${names(r.balanced)}. Equalize com a banda tocando '
-              '(pelo menos 2 instrumentos) — nada foi mudado.');
+      parts.add('Não ouvi nenhum instrumento tocando — nada foi mudado.');
+    } else if (r.partial) {
+      parts.add('Só ouvi ${names(r.balanced)} — já está no seu fone. '
+          'Quando a banda entrar, aperte Reequalizar.');
     } else {
       parts.add('Equalizado: ${r.balanced.length} canais.');
       if (r.remembered.isNotEmpty) {
@@ -226,6 +227,12 @@ class _MixerScreenState extends State<MixerScreen> {
     setState(() {});
     _announceEqualize();
     _tryDetectOwn();
+    if (!_mapPrompted) {
+      // Depois do frame (não dá pra navegar no meio de um build/notify).
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _maybeOpenChannelMap();
+      });
+    }
   }
 
   String _busLabel() {
@@ -297,13 +304,7 @@ class _MixerScreenState extends State<MixerScreen> {
       },
       inclusion: _client.inclusionOf(ch.ch),
       parkedAtMesa: _client.isParkedAtMesa(ch.ch),
-      onInclusionChanged: (v) async {
-        _client.setChannelInclusion(ch.ch, v);
-        final mixer = _client.mixerName;
-        if (mixer != null && mixer.isNotEmpty) {
-          await AppSettings.setChannelInclusion(mixer, _client.busIndex, ch.ch, v);
-        }
-      },
+      onInclusionChanged: (v) => _setInclusion(ch.ch, v),
       boostDb: _client.channelBoostDb(ch.ch),
       onBoostChanged: (db) async {
         _client.setChannelBoost(ch.ch, db);
@@ -313,6 +314,48 @@ class _MixerScreenState extends State<MixerScreen> {
         }
       },
     );
+  }
+
+  Future<void> _setInclusion(int ch, ChannelInclusion v) async {
+    _client.setChannelInclusion(ch, v);
+    final mixer = _client.mixerName;
+    if (mixer != null && mixer.isNotEmpty) {
+      await AppSettings.setChannelInclusion(mixer, _client.busIndex, ch, v);
+    }
+  }
+
+  // ── Mapear canais ──────────────────────────────────────────────────────────
+  // Abre sozinho uma vez por mesa quando há canal com nome mas sem instrumento
+  // (Igor, Brenda, DM…) — assim ninguém esquece de mapear. Sempre no menu ⋮.
+  bool _mapPrompted = false;
+
+  Future<void> _openChannelMap() async {
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => ChannelMapScreen(
+        client: _client,
+        ownPicker: _ownPicker(),
+        onEdit: _editInstrument,
+        onInclusion: _setInclusion,
+      ),
+    ));
+    final mixer = _client.mixerName;
+    if (mixer != null && mixer.isNotEmpty) {
+      await AppSettings.setChannelMapReviewed(mixer);
+    }
+  }
+
+  Future<void> _maybeOpenChannelMap() async {
+    if (_mapPrompted || widget.mode.isLive) return;
+    final mixer = _client.mixerName;
+    if (mixer == null || mixer.isEmpty) return;
+    final named = _client.channels.where((c) => !isUnnamedChannel(c));
+    if (named.isEmpty) return; // nomes ainda não chegaram da mesa
+    final needs = named.any(
+        (c) => _client.instruments[c.ch - 1] == InstrumentType.unknown);
+    _mapPrompted = true;
+    if (!needs || await AppSettings.channelMapReviewed(mixer)) return;
+    if (!mounted) return;
+    await _openChannelMap();
   }
 
   // Volta todos os canais à auto-detecção (limpa os overrides desta mesa).
@@ -478,6 +521,7 @@ class _MixerScreenState extends State<MixerScreen> {
           onSelected: (v) {
             if (v == 'reset_instruments') _resetOverrides();
             if (v == 'stop_equalizer') _client.stopEqualizer();
+            if (v == 'map_channels') _openChannelMap();
             if (v == 'export_diagnostic') _exportDiagnostic();
           },
           itemBuilder: (_) => [
@@ -494,6 +538,16 @@ class _MixerScreenState extends State<MixerScreen> {
                   ],
                 ),
               ),
+            const PopupMenuItem(
+              value: 'map_channels',
+              child: Row(
+                children: [
+                  Icon(Icons.checklist, size: 18, color: AppColors.green),
+                  SizedBox(width: 10),
+                  Text('Mapear canais'),
+                ],
+              ),
+            ),
             const PopupMenuItem(
               value: 'reset_instruments',
               child: Row(

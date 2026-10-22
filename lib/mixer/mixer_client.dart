@@ -629,6 +629,7 @@ class MixerClient extends ChangeNotifier {
       'parkedOff': r.parkedOff,
       'unknown': r.unknown,
       'tooFew': r.tooFew,
+      'partial': r.partial,
     });
     if (!r.ok) {
       notifyListeners();

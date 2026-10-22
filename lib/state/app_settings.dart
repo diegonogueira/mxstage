@@ -36,6 +36,20 @@ class AppSettings {
   static String _ownKey(String mixer, int bus) => 'own_ch:$mixer:$bus';
   // Canal dentro/fora do meu fone — por bus, como o "meu canal".
   static String _inclKey(String mixer, int bus) => 'ch_incl:$mixer:$bus';
+  // "Mapear canais" já foi revisado nesta mesa (não abre sozinho de novo).
+  static String _mapKey(String mixer) => 'map_reviewed:$mixer';
+
+  static Future<bool> channelMapReviewed(String mixer) async {
+    if (mixer.isEmpty) return true;
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_mapKey(mixer)) ?? false;
+  }
+
+  static Future<void> setChannelMapReviewed(String mixer) async {
+    if (mixer.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_mapKey(mixer), true);
+  }
 
   /// Bus atualmente designado como o da transmissão, ou `null` se nunca definido.
   static Future<int?> liveBus() async {
@@ -321,7 +335,8 @@ class AppSettings {
               k.startsWith('ch_boost:') ||
               k.startsWith('master_db:') ||
               k.startsWith('own_ch:') ||
-              k.startsWith('ch_incl:'),
+              k.startsWith('ch_incl:') ||
+              k.startsWith('map_reviewed:'),
         );
     for (final k in ours.toList()) {
       await prefs.remove(k);
