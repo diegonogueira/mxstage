@@ -36,6 +36,42 @@ class AppSettings {
   static String _ownKey(String mixer, int bus) => 'own_ch:$mixer:$bus';
   // Canal dentro/fora do meu fone — por bus, como o "meu canal".
   static String _inclKey(String mixer, int bus) => 'ch_incl:$mixer:$bus';
+  // Pares estéreo — por mesa (é a mesa que tem o teclado em L/R).
+  static String _pairsKey(String mixer) => 'ch_pairs:$mixer';
+
+  /// `null` = nunca definido nesta mesa (o app sugere); `{}` = sem pares.
+  static Future<Map<int, int>?> channelPairs(String mixer) async {
+    if (mixer.isEmpty) return null;
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_pairsKey(mixer));
+    if (raw == null) return null;
+    final out = <int, int>{};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        for (final p in decoded) {
+          if (p is List && p.length == 2 && p[0] is int && p[1] is int) {
+            out[p[0] as int] = p[1] as int;
+            out[p[1] as int] = p[0] as int;
+          }
+        }
+      }
+    } catch (_) {
+      return {};
+    }
+    return out;
+  }
+
+  static Future<void> setChannelPairs(String mixer, Map<int, int> links) async {
+    if (mixer.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    final pairs = [
+      for (final e in links.entries)
+        if (e.key < e.value) [e.key, e.value],
+    ];
+    await prefs.setString(_pairsKey(mixer), jsonEncode(pairs));
+  }
+
   // "Mapear canais" já foi revisado nesta mesa (não abre sozinho de novo).
   static String _mapKey(String mixer) => 'map_reviewed:$mixer';
 
@@ -336,7 +372,8 @@ class AppSettings {
               k.startsWith('master_db:') ||
               k.startsWith('own_ch:') ||
               k.startsWith('ch_incl:') ||
-              k.startsWith('map_reviewed:'),
+              k.startsWith('map_reviewed:') ||
+              k.startsWith('ch_pairs:'),
         );
     for (final k in ours.toList()) {
       await prefs.remove(k);

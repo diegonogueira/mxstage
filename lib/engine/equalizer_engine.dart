@@ -59,6 +59,13 @@ class EqualizerParams {
   /// keys became the top and pushed everyone ~25 dB down ("MUITO baixo").
   final double anchorRangeDb;
 
+  /// Range of the per-channel correction (reforço / fader drag), dB. Wide on the
+  /// cut side: the mesa's meter can under-read a channel (28/10: a violão read
+  /// ~13 dB under the keys but was heard far above) and the musician must be
+  /// able to pull it all the way down.
+  final double boostMinDb;
+  final double boostMaxDb;
+
   /// Below this many distinct musician roles (voz, teclas, bateria, baixo…)
   /// heard, the equalization still applies but is flagged [EqualizeResult.partial]
   /// — a musician who arrives early must be able to hear himself; the UI asks
@@ -69,8 +76,12 @@ class EqualizerParams {
   const EqualizerParams({
     this.silenceFloorDb = -65.0,
     this.frameRangeDb = 40.0,
-    this.channelGateDb = 15.0,
-    this.minPlayingFraction = 0.15,
+    // Stricter since the 28/10 log: a violão playing little in the window was
+    // measured anywhere from −44 to −61 dB and then blew up when strummed. Gate
+    // nearer the loud part (10 dB) and demand more playing time (35%) — a
+    // channel that barely played keeps what it had instead of a wrong level.
+    this.channelGateDb = 10.0,
+    this.minPlayingFraction = 0.35,
     this.topSendDb = 0.0,
     this.sendFloorDb = -60.0,
     this.sendCeilingDb = 10.0,
@@ -78,12 +89,14 @@ class EqualizerParams {
     // 3–5 dB over target in the chorus with trigger 6 / knee 3.
     this.protectTriggerDb = 4.0,
     this.protectKneeDb = 1.0,
-    this.protectMaxCutDb = 12.0,
+    this.protectMaxCutDb = 18.0,
     this.protectAttackDb = 2.0,
     this.protectReleaseDb = 0.5,
     this.minChangeDb = 0.25,
     this.anchorRangeDb = 20.0,
     this.partialBelowRoles = 2,
+    this.boostMinDb = -18.0,
+    this.boostMaxDb = 12.0,
   });
 }
 
@@ -116,6 +129,15 @@ class EqualizeResult {
   /// No known instrument heard — nothing applied.
   final bool tooFew;
 
+  /// Pairs of channels that carried the *same* signal the whole window (e.g. an
+  /// unnamed input that is a copy of Keys L) and aren't linked as a stereo pair
+  /// — counting both doubles that instrument. The UI suggests linking/removing.
+  final List<List<int>> duplicates;
+
+  /// The base channel ("meu instrumento") has never been heard — the balance
+  /// fell back to the loudest channels; ask the musician to play a bit.
+  final bool baseUnheard;
+
   /// Applied, but fewer than [EqualizerParams.partialBelowRoles] roles were
   /// heard (e.g. only the keys warming up) — re-equalize when the band enters.
   final bool partial;
@@ -129,6 +151,8 @@ class EqualizeResult {
     this.unknown = const [],
     this.tooFew = false,
     this.partial = false,
+    this.duplicates = const [],
+    this.baseUnheard = false,
   });
 
   bool get ok => balanced.isNotEmpty && !tooFew;
@@ -178,9 +202,6 @@ class EqualizerEngine {
   /// Sends of channels *not* balanced (unheard / parked off): held as they were.
   final Map<int, double> _heldSendDb = {};
 
-  /// Manual trim per channel (dB) — a fader drag while equalized becomes a
-  /// trim on top of the balance instead of being fought.
-  final Map<int, double> _trimDb = {};
 
   /// Current protection cut per channel (dB, ≤ 0).
   final Map<int, double> _cutDb = {};
@@ -193,11 +214,18 @@ class EqualizerEngine {
   /// unless [forcedIn]).
   final Set<int> _parkedOff = {};
 
-  /// Shift (dB) added to the formula `K`, so a re-equalization keeps the
-  /// monitor where it was (the band playing louder in the chorus doesn't move
-  /// the reference — re-measured channels get re-balanced *at the same ear
-  /// level*, remembered ones don't move). 0 on a fresh equalization.
+  /// Shift (dB) added to the formula `K` **when there is no base channel**, so
+  /// a re-equalization keeps the monitor where it was (the band playing louder
+  /// in the chorus doesn't move the reference — remembered ones don't move). 0
+  /// on a fresh equalization. With a base ("meu instrumento") the base itself is
+  /// the reference and this stays 0.
   double _kShift = 0.0;
+
+  /// Stereo pairs (symmetric: a→b and b→a), per mesa, owned by the client. A
+  /// pair is one instrument: measured together (the louder side), same send,
+  /// counted once. 28/10: the keys came in through three inputs and were
+  /// counted three times.
+  Map<int, int> links = {};
 
   /// "Fora do meu fone": channels the musician took out — send off, never
   /// measured or balanced. Per mesa+bus, owned by the client.
@@ -302,6 +330,24 @@ class EqualizerEngine {
       }
     }
 
+    // Stereo pairs: one instrument → both sides take the louder measurement.
+    for (final e in links.entries) {
+      final a = e.key, b = e.value;
+      if (a > b) continue;
+      final la = levels[a], lb = levels[b];
+      if (la == null && lb == null) continue;
+      final l = max(la ?? double.negativeInfinity, lb ?? double.negativeInfinity);
+      if (!excluded.contains(a) && typeOf(a) != InstrumentType.unknown) levels[a] = l;
+      if (!excluded.contains(b) && typeOf(b) != InstrumentType.unknown) levels[b] = l;
+      unheard.removeWhere((c) => c == a || c == b);
+    }
+    // Any channel with signal, named or not: the 28/10 copy of the keys came in
+    // on an unnamed input.
+    final duplicates = _findDuplicates(frames, [
+      for (var c = 1; c <= (frames.isEmpty ? 0 : frames.first.length); c++)
+        if (!excluded.contains(c)) c,
+    ]);
+
     final roles = {
       for (final ch in levels.keys)
         if (!parkedOff.contains(ch)) roleFor(typeOf(ch)),
@@ -325,7 +371,6 @@ class EqualizerEngine {
     final kBefore = merging ? _k(instruments, preset) : 0.0;
     if (!_active) {
       _levelDb.clear();
-      _trimDb.clear();
       _kShift = 0.0;
     }
     // A channel that became unknown, or excluded, is forgotten.
@@ -336,7 +381,6 @@ class EqualizerEngine {
         if (!levels.containsKey(ch) && _isBalanced(ch)) ch,
     ]..sort();
     for (final ch in levels.keys) {
-      _trimDb.remove(ch); // re-measured → fresh balance, no stale trim
       _cutDb.remove(ch);
       _lastSentDb.remove(ch);
     }
@@ -349,11 +393,12 @@ class EqualizerEngine {
       _heldSendDb.putIfAbsent(e.key, () => e.value);
     }
     _active = true;
-    if (merging) {
-      // Keep the reference where it was (see [_kShift]).
-      _kShift = 0.0;
+    _kShift = 0.0;
+    if (merging && _baseChannels(instruments).isEmpty) {
+      // No base: keep the reference where it was (see [_kShift]).
       _kShift = kBefore - _k(instruments, preset);
     }
+    final baseUnheard = ownChannel != null && _baseChannels(instruments).isEmpty;
     return EqualizeResult(
       balanced: [for (final ch in levels.keys) if (_isBalanced(ch)) ch]..sort(),
       remembered: remembered,
@@ -362,7 +407,44 @@ class EqualizerEngine {
       parkedOff: parkedOff,
       unknown: unknown,
       partial: roles.length < params.partialBelowRoles,
+      duplicates: duplicates,
+      baseUnheard: baseUnheard,
     );
+  }
+
+  /// Channels that moved together, same level, the whole window — a copy of
+  /// one source on two inputs. Linked pairs are expected and skipped.
+  List<List<int>> _findDuplicates(List<List<double>> frames, List<int> chs) {
+    final out = <List<int>>[];
+    for (var x = 0; x < chs.length; x++) {
+      for (var y = x + 1; y < chs.length; y++) {
+        final a = chs[x], b = chs[y];
+        if (links[a] == b) continue;
+        var both = 0, sum = 0.0;
+        for (final f in frames) {
+          if (a > f.length || b > f.length) continue;
+          final va = f[a - 1], vb = f[b - 1];
+          if (va <= params.silenceFloorDb || vb <= params.silenceFloorDb) continue;
+          both++;
+          sum += (va - vb).abs();
+        }
+        if (both >= frames.length * 0.5 && sum / both < 1.0) out.add([a, b]);
+      }
+    }
+    return out;
+  }
+
+  /// The base channels: "meu instrumento" plus its stereo partner — or, for a
+  /// drummer, the whole kit — that are balanced and measured.
+  List<int> _baseChannels(List<InstrumentType> instruments) {
+    final own = ownChannel;
+    if (own == null) return const [];
+    InstrumentType typeOf(int c) =>
+        (c >= 1 && c <= instruments.length) ? instruments[c - 1] : InstrumentType.unknown;
+    final Iterable<int> set = isDrumKit(typeOf(own))
+        ? [for (var c = 1; c <= instruments.length; c++) if (isDrumKit(typeOf(c))) c]
+        : [own, if (links[own] != null) links[own]!];
+    return [for (final c in set) if (_isBalanced(c)) c];
   }
 
   /// A measured channel is balanced unless excluded, or parked off at the mesa
@@ -378,7 +460,6 @@ class EqualizerEngine {
     _active = false;
     _levelDb.clear();
     _heldSendDb.clear();
-    _trimDb.clear();
     _cutDb.clear();
     _lastSentDb.clear();
     _parkedOff.clear();
@@ -388,6 +469,11 @@ class EqualizerEngine {
   /// Balance offset `K` so the highest balanced send (style target + boost +
   /// trim − level) sits at [EqualizerParams.topSendDb].
   double _k(List<InstrumentType> instruments, GenrePreset preset) {
+    // Base ("meu instrumento"): it sits at the top send and everyone else is
+    // placed relative to it — even when it isn't playing now (its remembered
+    // level is used). 28/10: without a fixed base the top hopped between
+    // whoever was loudest and the keys came out right one time, too loud the
+    // next.
     final chs = _balancedChannels.toList();
     if (chs.isEmpty) return params.topSendDb + _kShift;
     final loudest = chs.map((c) => _levelDb[c]!).reduce(max);
@@ -396,6 +482,21 @@ class EqualizerEngine {
       final level = _levelDb[ch]!;
       if (level < loudest - params.anchorRangeDb) continue; // can't anchor K
       top = max(top, _rel(ch, instruments, preset) - level);
+    }
+    final base = _baseChannels(instruments);
+    if (base.isNotEmpty) {
+      var baseTop = double.negativeInfinity;
+      for (final ch in base) {
+        baseTop = max(baseTop, _rel(ch, instruments, preset) - _levelDb[ch]!);
+      }
+      // The base sits at the top send and **doesn't move** (28/10 replay: a
+      // quiet vocal pulled the keys down 8 dB) — someone who'd need more than
+      // the ceiling just caps there. Only a drummer's kit, whose targets sit
+      // far under the voice, comes down enough to keep the voice reachable.
+      final kBase = params.topSendDb - baseTop;
+      final own = ownChannel!;
+      final kitBase = own <= instruments.length && isDrumKit(instruments[own - 1]);
+      return kitBase ? min(kBase, params.sendCeilingDb - top) : kBase;
     }
     return params.topSendDb - top + _kShift;
   }
@@ -414,10 +515,15 @@ class EqualizerEngine {
         );
   }
 
-  /// Send (dB) of a balanced channel before master / protection.
+  /// Send (dB) of a balanced channel before master / protection. The physical
+  /// bounds apply to the *balance* first and the musician's correction comes on
+  /// top — 28/10: a −9 reforço on a violão whose balance wanted +27 was eaten by
+  /// the +10 ceiling and did nothing.
   double _base(int ch, double k, List<InstrumentType> instruments, GenrePreset preset) =>
-      k + _rel(ch, instruments, preset) - _levelDb[ch]! +
-      (boostDb[ch] ?? 0.0) + (_trimDb[ch] ?? 0.0);
+      (k + _rel(ch, instruments, preset) - _levelDb[ch]!)
+          .clamp(params.sendFloorDb, params.sendCeilingDb)
+          .toDouble() +
+      (boostDb[ch] ?? 0.0);
 
   /// Effective master: lowering always works, raising stops at the headroom of
   /// the hottest balanced send to the ceiling (keeps the balance intact).
@@ -457,9 +563,11 @@ class EqualizerEngine {
     return out;
   }
 
-  /// A manual fader move on [ch] while equalized: keep it as a trim, so the
-  /// engine never fights the musician. Unbalanced channels are simply held at
-  /// the new value.
+  /// A manual fader move on [ch] while equalized becomes this channel's
+  /// **reforço** (kept per mesa by the client), so the engine never fights the
+  /// musician and the correction survives re-equalizing and the next service.
+  /// Unbalanced channels are simply held at the new value. A stereo partner
+  /// follows.
   void setManualSend(
       int ch, double sendDb, List<InstrumentType> instruments, GenrePreset preset) {
     if (!_active) return;
@@ -470,7 +578,17 @@ class EqualizerEngine {
       return;
     }
     final current = targetSendsDb(instruments, preset)[ch]!;
-    _trimDb[ch] = (_trimDb[ch] ?? 0.0) + (sendDb - current);
+    final next = ((boostDb[ch] ?? 0.0) + (sendDb - current))
+        .clamp(params.boostMinDb, params.boostMaxDb)
+        .toDouble();
+    final partner = links[ch];
+    for (final c in [ch, ?partner]) {
+      if (next == 0.0) {
+        boostDb.remove(c);
+      } else {
+        boostDb[c] = next;
+      }
+    }
     _lastSentDb[ch] = sendDb;
   }
 

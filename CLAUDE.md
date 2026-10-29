@@ -93,6 +93,33 @@ baixo** (~6 dB). O Equalizar resolve os dois:
    Equalizar e pelo Auto-Mix; restaurar baseline não o reabre). Escritas internas
    não viram baseline.
 
+**Base = meu instrumento (desde o log de 28/10):** no Stage o "meu instrumento" é
+**obrigatório** (sem "Nenhum"; `_ensureOwnChannel` pergunta ao entrar e ao
+Equalizar). Com base, `K` é ancorado nela: o canal (ou o par estéreo, ou o kit
+todo pro baterista) fica no `topSendDb` e **não se mexe** — inclusive quando não
+tocou na janela (usa o nível lembrado; nunca ouvido ⇒ `baseUnheard`). Quem
+precisaria passar do teto só trava no teto (só a base "kit" desce pra caber a
+voz). Sem base (Live) vale o `K` antigo (janela âncora + `_kShift`). O teto é
+aplicado ao **balanço antes do reforço** (`_base`), então reforço/fader sempre
+fazem efeito; arrastar o fader equalizado vira **reforço do canal** (−18..+12,
+salvo por mesa via `ChannelActions.saveBoost`) — a correção sobrevive ao
+Reequalizar e ao próximo culto. Medição mais exigente: gate 10 dB do forte, ≥35%
+da janela tocando. Proteção corta até 18 dB.
+
+**Pares estéreo** (por mesa, `AppSettings.channelPairs`, `MixerClient.linkPair`):
+um instrumento só — medido pelo lado mais forte, mesmo envio, conta uma vez, a
+base inclui o par. Sugestões: link da própria mesa (`/config/chlink/N-M`, só
+leitura) + nomes (`channel_pairs.dart`: "X L/X R", nomes iguais vizinhos);
+aplicadas na primeira vez. `duplicates` no resultado aponta canais com o mesmo som
+(28/10: 27/28/29 sem nome eram cópias de guitarra/violão/teclado; o 29 ia ao fone
+a 0 dB pela mesa e o ícone o fazia "voz principal"). **Canal sem nome é sempre
+`unknown`** (`ChannelMapper.isUnnamed`), ícone nenhum o promove.
+
+**Fluxo:** mesa → **mapear** (primeira conexão a cada mesa, antes do bus, sem a
+coluna no/fora — `ConnectScreen._mapFirstTime`) → bus → meu instrumento →
+Equalizar. Ações/persistência de canal compartilhadas em
+`lib/ui/widgets/channel_actions.dart`.
+
 **Meu instrumento** (`lib/state/musician_roles.dart`): o músico escolhe o *canal*
 dele (por mesa+bus, `AppSettings.ownChannel`); o papel vem do instrumento desse
 canal. Terceira camada do alvo: `alvo = base + estilo + papel`. O canal escolhido

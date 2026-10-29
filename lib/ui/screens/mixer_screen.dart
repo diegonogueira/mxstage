@@ -13,8 +13,8 @@ import '../../state/musician_roles.dart';
 import '../instrument_visuals.dart';
 import '../palette.dart';
 import '../widgets/bus_picker.dart';
+import '../widgets/channel_actions.dart';
 import 'channel_map_screen.dart';
-import '../widgets/instrument_picker.dart';
 import '../widgets/live_entry.dart';
 import '../widgets/mode_badge.dart';
 
@@ -30,6 +30,7 @@ class MixerScreen extends StatefulWidget {
 
 class _MixerScreenState extends State<MixerScreen> {
   MixerClient get _client => widget.client;
+  late final ChannelActions _actions = ChannelActions(_client);
 
   // Active group filter (null = show all channels).
   InstrumentGroup? _group;
@@ -103,6 +104,15 @@ class _MixerScreenState extends State<MixerScreen> {
     if (r.parkedOff.isNotEmpty) {
       parts.add('Desligados na mesa pro seu bus: ${names(r.parkedOff)} — '
           'segure o canal e toque em "No meu fone" pra incluir.');
+    }
+    if (r.baseUnheard) {
+      parts.add('Ainda não ouvi o seu instrumento — toque um pouco e '
+          'aperte Reequalizar pra ele virar a base.');
+    }
+    if (r.duplicates.isNotEmpty) {
+      final d = r.duplicates.first;
+      parts.add('${_client.channels[d[1] - 1].name.isEmpty ? 'Canal ${d[1]}' : _client.channels[d[1] - 1].name} '
+          'tem o mesmo som de ${_client.channels[d[0] - 1].name} — veja em ⋮ › Mapear canais.');
     }
     if (r.unknown.isNotEmpty) {
       parts.add('Ignorados (instrumento desconhecido): ${names(r.unknown)} — '
@@ -243,7 +253,7 @@ class _MixerScreenState extends State<MixerScreen> {
 
   Widget? _ownPicker() => widget.mode.isLive
       ? null
-      : _OwnChannelPicker(client: _client, onChanged: _setOwnChannel);
+      : _OwnChannelPicker(client: _client, onChanged: _setOwnChannel, allowNone: false);
 
   void _showBusPicker() {
     final mode = widget.mode;
@@ -287,42 +297,10 @@ class _MixerScreenState extends State<MixerScreen> {
 
   // Segurar um canal abre o seletor do que ele realmente é (Voz Lead, Backing,
   // Guitarra…). A sobreposição vence a auto-detecção e é salva por mesa.
-  void _editInstrument(ChannelInfo ch) {
-    showInstrumentPicker(
-      context,
-      ch: ch.ch,
-      channelName: ch.name,
-      current: _client.instruments[ch.ch - 1],
-      detected: _client.detectedInstrument(ch.ch),
-      isOverridden: _client.isOverridden(ch.ch),
-      onSelected: (type) async {
-        _client.setInstrumentOverride(ch.ch, type);
-        final mixer = _client.mixerName;
-        if (mixer != null && mixer.isNotEmpty) {
-          await AppSettings.setInstrumentOverride(mixer, ch.ch, type);
-        }
-      },
-      inclusion: _client.inclusionOf(ch.ch),
-      parkedAtMesa: _client.isParkedAtMesa(ch.ch),
-      onInclusionChanged: (v) => _setInclusion(ch.ch, v),
-      boostDb: _client.channelBoostDb(ch.ch),
-      onBoostChanged: (db) async {
-        _client.setChannelBoost(ch.ch, db);
-        final mixer = _client.mixerName;
-        if (mixer != null && mixer.isNotEmpty) {
-          await AppSettings.setChannelBoost(mixer, ch.ch, db);
-        }
-      },
-    );
-  }
+  void _editInstrument(ChannelInfo ch) => _actions.edit(context, ch);
 
-  Future<void> _setInclusion(int ch, ChannelInclusion v) async {
-    _client.setChannelInclusion(ch, v);
-    final mixer = _client.mixerName;
-    if (mixer != null && mixer.isNotEmpty) {
-      await AppSettings.setChannelInclusion(mixer, _client.busIndex, ch, v);
-    }
-  }
+
+
 
   // ── Mapear canais ──────────────────────────────────────────────────────────
   // Abre sozinho uma vez por mesa quando há canal com nome mas sem instrumento
@@ -333,9 +311,8 @@ class _MixerScreenState extends State<MixerScreen> {
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => ChannelMapScreen(
         client: _client,
+        actions: _actions,
         ownPicker: _ownPicker(),
-        onEdit: _editInstrument,
-        onInclusion: _setInclusion,
       ),
     ));
     final mixer = _client.mixerName;
@@ -345,18 +322,44 @@ class _MixerScreenState extends State<MixerScreen> {
   }
 
   Future<void> _maybeOpenChannelMap() async {
-    if (_mapPrompted || widget.mode.isLive) return;
+    if (_mapPrompted) return;
     final mixer = _client.mixerName;
     if (mixer == null || mixer.isEmpty) return;
     final named = _client.channels.where((c) => !isUnnamedChannel(c));
     if (named.isEmpty) return; // nomes ainda não chegaram da mesa
-    final needs = named.any(
-        (c) => _client.instruments[c.ch - 1] == InstrumentType.unknown);
     _mapPrompted = true;
-    if (!needs || await AppSettings.channelMapReviewed(mixer)) return;
+    await _actions.loadPairs();
+    // Passo 2 do fluxo: mapear, na primeira vez nesta mesa (no Stage). A tela
+    // de conexão normalmente já fez isso antes do bus; aqui cobre o bus
+    // reaberto direto.
+    if (!widget.mode.isLive && !await AppSettings.channelMapReviewed(mixer)) {
+      if (!mounted) return;
+      await _openChannelMap();
+    }
     if (!mounted) return;
-    await _openChannelMap();
+    await _ensureOwnChannel();
   }
+
+  // Passo 4: no Stage, o seu instrumento é obrigatório — é a base de tudo.
+  // Pergunta uma vez ao entrar (com a sugestão do nome do bus já marcada) e de
+  // novo ao Equalizar se ainda não tiver.
+  bool _ownAsked = false;
+
+  Future<bool> _ensureOwnChannel({bool force = false}) async {
+    if (widget.mode.isLive || _client.ownChannel != null) return true;
+    if (_ownAsked && !force) return false;
+    _ownAsked = true;
+    final picked = await pickOwnChannel(context, _client, allowNone: false);
+    if (picked == null || picked == 0 || !mounted) return false;
+    _setOwnChannel(picked);
+    return true;
+  }
+
+  Future<void> _equalize() async {
+    if (!await _ensureOwnChannel(force: true)) return;
+    _client.equalize();
+  }
+
 
   // Volta todos os canais à auto-detecção (limpa os overrides desta mesa).
   Future<void> _resetOverrides() async {
@@ -446,6 +449,7 @@ class _MixerScreenState extends State<MixerScreen> {
             _ControlBar(
               client: _client,
               ownPicker: _ownPicker(),
+              onEqualize: _equalize,
               present: present,
               selected: _group,
               onSelected: (g) => setState(() => _group = g),
@@ -453,7 +457,7 @@ class _MixerScreenState extends State<MixerScreen> {
             _MasterVolumeBar(
                 client: _client, isLandscape: true, onChanged: _onMasterChanged),
           ] else ...[
-            _AutoMixBar(client: _client, ownPicker: _ownPicker()),
+            _AutoMixBar(client: _client, ownPicker: _ownPicker(), onEqualize: _equalize),
             _MasterVolumeBar(
                 client: _client, isLandscape: false, onChanged: _onMasterChanged),
             _GroupTabs(
@@ -469,7 +473,11 @@ class _MixerScreenState extends State<MixerScreen> {
               muted: _client.isMuted,
               isLandscape: isLandscape,
               meterDb: _client.meterDisplayDb,
-              onLevelChanged: (ch, v) => _client.setChannelSend(ch, v),
+              onLevelChanged: (ch, v) {
+                _client.setChannelSend(ch, v);
+                // Equalizado: o fader virou reforço do canal — grava pra durar.
+                if (_client.equalizerActive) _actions.saveBoost(ch);
+              },
               isOverridden: _client.isOverridden,
               isExcluded: (ch) =>
                   _client.inclusionOf(ch) == ChannelInclusion.exclude,
@@ -582,8 +590,9 @@ class _MixerScreenState extends State<MixerScreen> {
 class _AutoMixBar extends StatelessWidget {
   final MixerClient client;
   final Widget? ownPicker;
+  final VoidCallback? onEqualize;
 
-  const _AutoMixBar({required this.client, this.ownPicker});
+  const _AutoMixBar({required this.client, this.ownPicker, this.onEqualize});
 
   @override
   Widget build(BuildContext context) {
@@ -598,7 +607,8 @@ class _AutoMixBar extends StatelessWidget {
           Expanded(
             child: Align(
               alignment: Alignment.centerLeft,
-              child: _EqualizeControls(client: client, ownPicker: ownPicker),
+              child: _EqualizeControls(
+                  client: client, ownPicker: ownPicker, onEqualize: onEqualize),
             ),
           ),
         ],
@@ -616,8 +626,10 @@ class _EqualizeControls extends StatelessWidget {
   final MixerClient client;
   // "Meu instrumento" fica colado no Equalizar: são as duas escolhas do fluxo.
   final Widget? ownPicker;
+  // Equalizar via tela (garante o "meu instrumento" antes); padrão = direto.
+  final VoidCallback? onEqualize;
 
-  const _EqualizeControls({required this.client, this.ownPicker});
+  const _EqualizeControls({required this.client, this.ownPicker, this.onEqualize});
 
   @override
   Widget build(BuildContext context) {
@@ -636,7 +648,7 @@ class _EqualizeControls extends StatelessWidget {
       eqOn: eqOn,
       autoOn: autoOn,
       enabled: enabled,
-      onEqualize: client.equalize,
+      onEqualize: onEqualize ?? client.equalize,
       onCancel: client.cancelEqualize,
       onToggleAuto: () => autoOn ? client.disableAutoMix() : client.enableAutoMix(),
     );
@@ -855,8 +867,14 @@ class _SplitModeButton extends StatelessWidget {
 class _OwnChannelPicker extends StatelessWidget {
   final MixerClient client;
   final ValueChanged<int?> onChanged;
+  // No Stage o seu instrumento é obrigatório (é a base): sem "Nenhum".
+  final bool allowNone;
 
-  const _OwnChannelPicker({required this.client, required this.onChanged});
+  const _OwnChannelPicker({
+    required this.client,
+    required this.onChanged,
+    this.allowNone = true,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -910,16 +928,23 @@ class _OwnChannelPicker extends StatelessWidget {
   }
 
   Future<void> _pick(BuildContext context) async {
-    final picked = await showModalBottomSheet<int>(
-      context: context,
-      backgroundColor: AppColors.panel,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (ctx) => _OwnChannelSheet(client: client),
-    );
+    final picked = await pickOwnChannel(context, client, allowNone: allowNone);
     if (picked == null) return;
     onChanged(picked == 0 ? null : picked);
   }
+}
+
+/// "Qual é o seu instrumento?" — devolve o canal escolhido, 0 = "Nenhum" (só
+/// com [allowNone]) ou null se fechou sem escolher.
+Future<int?> pickOwnChannel(BuildContext context, MixerClient client,
+    {bool allowNone = true}) {
+  return showModalBottomSheet<int>(
+    context: context,
+    backgroundColor: AppColors.panel,
+    showDragHandle: true,
+    isScrollControlled: true,
+    builder: (ctx) => _OwnChannelSheet(client: client, allowNone: allowNone),
+  );
 }
 
 // Lista do "Qual é o seu instrumento?": só canais com instrumento conhecido que
@@ -927,8 +952,9 @@ class _OwnChannelPicker extends StatelessWidget {
 // bateria como **uma** entrada (o kit todo), não peça por peça.
 class _OwnChannelSheet extends StatefulWidget {
   final MixerClient client;
+  final bool allowNone;
 
-  const _OwnChannelSheet({required this.client});
+  const _OwnChannelSheet({required this.client, this.allowNone = true});
 
   @override
   State<_OwnChannelSheet> createState() => _OwnChannelSheetState();
@@ -953,9 +979,15 @@ class _OwnChannelSheetState extends State<_OwnChannelSheet> {
     final kit = drumKitChannel(instr);
     final kitVisible = kit != null &&
         client.channels.any((c) => isDrumKit(instr[c.ch - 1]) && visible(c.ch));
+    // Par estéreo aparece uma vez só ("Keys L + Keys R").
+    bool secondOfPair(int ch) {
+      final p = client.partnerOf(ch);
+      return p != null && p < ch;
+    }
+
     final others = [
       for (final c in client.channels)
-        if (!isDrumKit(instr[c.ch - 1]) && visible(c.ch)) c,
+        if (!isDrumKit(instr[c.ch - 1]) && visible(c.ch) && !secondOfPair(c.ch)) c,
     ];
     final hidden = client.channels.length - others.length -
         client.channels.where((c) => isDrumKit(instr[c.ch - 1])).length;
@@ -979,17 +1011,18 @@ class _OwnChannelSheetState extends State<_OwnChannelSheet> {
             const Padding(
               padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
               child: Text(
-                'Ele sobe no seu fone e os outros se ajustam ao que você '
-                'precisa ouvir pra tocar.',
+                'É a base do seu fone: ele fica na frente e todo o resto é '
+                'equalizado em volta dele — mesmo quando você não está tocando.',
                 style: TextStyle(fontSize: 12.5, color: AppColors.textSecondary),
               ),
             ),
-            ListTile(
-              leading: const Icon(Icons.groups_outlined),
-              title: const Text('Nenhum (balanço geral, voz na frente)'),
-              trailing: check(own == null),
-              onTap: () => Navigator.pop(context, 0),
-            ),
+            if (widget.allowNone)
+              ListTile(
+                leading: const Icon(Icons.groups_outlined),
+                title: const Text('Nenhum (balanço geral, voz na frente)'),
+                trailing: check(own == null),
+                onTap: () => Navigator.pop(context, 0),
+              ),
             if (kitVisible)
               ListTile(
                 leading: Icon(instrumentIcon(InstrumentType.drums)),
@@ -1001,7 +1034,9 @@ class _OwnChannelSheetState extends State<_OwnChannelSheet> {
             for (final ch in others)
               ListTile(
                 leading: Icon(instrumentIcon(instr[ch.ch - 1])),
-                title: Text(ch.name),
+                title: Text(client.partnerOf(ch.ch) == null
+                    ? ch.name
+                    : '${ch.name} + ${client.channels[client.partnerOf(ch.ch)! - 1].name}'),
                 subtitle: Text(
                   '${instr[ch.ch - 1].label} · ${roleFor(instr[ch.ch - 1]).label}',
                 ),
@@ -1188,6 +1223,7 @@ Widget _groupChip(String label, IconData icon, bool sel, VoidCallback onTap) {
 class _ControlBar extends StatelessWidget {
   final MixerClient client;
   final Widget? ownPicker;
+  final VoidCallback? onEqualize;
   final Set<InstrumentGroup> present;
   final InstrumentGroup? selected;
   final ValueChanged<InstrumentGroup?> onSelected;
@@ -1195,6 +1231,7 @@ class _ControlBar extends StatelessWidget {
   const _ControlBar({
     required this.client,
     this.ownPicker,
+    this.onEqualize,
     required this.present,
     required this.selected,
     required this.onSelected,
@@ -1214,7 +1251,9 @@ class _ControlBar extends StatelessWidget {
       padding: const EdgeInsets.only(left: 12, right: 8),
       child: Row(
         children: [
-          Flexible(child: _EqualizeControls(client: client, ownPicker: ownPicker)),
+          Flexible(
+              child: _EqualizeControls(
+                  client: client, ownPicker: ownPicker, onEqualize: onEqualize)),
           if (showTabs) ...[
             const SizedBox(width: 10),
             Container(width: 1, height: 22, color: AppColors.border),

@@ -23,3 +23,9 @@ const int kInputChannelCount = 32;
 
 // Number of mix buses on X32 (1..16).
 const int kMixBusCount = 16;
+
+// CONFIRM AGAINST REAL HARDWARE: stereo link of an odd/even channel pair, read
+// only (,i 0/1) — `/config/chlink/1-2` … `/config/chlink/31-32`. Used to
+// suggest stereo pairs in "Mapear canais"; the app never writes it.
+String chLinkAddress(int oddCh) => '/config/chlink/$oddCh-${oddCh + 1}';
+final RegExp kChLinkPattern = RegExp(r'^/config/chlink/(\d+)-(\d+)$');

@@ -388,7 +388,8 @@ class _BoostControl extends StatelessWidget {
 
   const _BoostControl({required this.value, required this.onChanged});
 
-  static const double _min = -9, _max = 9, _step = 1;
+  // Corte largo: o medidor da mesa pode enganar (o violão de 28/10).
+  static const double _min = -18, _max = 12, _step = 1;
 
   @override
   Widget build(BuildContext context) {

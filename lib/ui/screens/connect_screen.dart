@@ -10,6 +10,8 @@ import '../palette.dart';
 import '../widgets/brand.dart';
 import '../widgets/bus_picker.dart';
 import '../widgets/live_entry.dart';
+import '../widgets/channel_actions.dart';
+import 'channel_map_screen.dart';
 import 'mixer_screen.dart';
 import 'mixer_setup_screen.dart';
 
@@ -62,10 +64,30 @@ class _ConnectScreenState extends State<ConnectScreen>
     final mixer = _client.mixerName;
     if (mixer == null || mixer.isEmpty) return; // espera o /xinfo chegar
     _autoOpened = true;
+    await _mapFirstTime(mixer);
+    if (!mounted || !_client.isConnected) return;
     final bus = await AppSettings.stageBus(mixer);
     if (bus == null || bus < 1 || bus > kMixBusCount || bus == _liveBus) return;
     if (!mounted || !_client.isConnected) return;
     await _openMixer(bus);
+  }
+
+  // Passo 2 do fluxo (mesa → **mapear** → bus → meu instrumento): na primeira
+  // conexão a esta mesa, mapeia os canais antes de escolher o bus. Vale pra mesa
+  // toda; o "no/fora do fone" (por bus) fica pra depois, no mixer.
+  Future<void> _mapFirstTime(String mixer) async {
+    // Espera os nomes dos canais chegarem (a conexão já os pediu).
+    for (var i = 0; i < 40; i++) {
+      if (_client.channels.any((c) => !isUnnamedChannel(c))) break;
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+    final actions = ChannelActions(_client, withInclusion: false);
+    await actions.loadPairs();
+    if (await AppSettings.channelMapReviewed(mixer) || !mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => ChannelMapScreen(client: _client, actions: actions),
+    ));
+    await AppSettings.setChannelMapReviewed(mixer);
   }
 
   // Zera tudo que o app lembra (bus do Stage por mesa, gênero por mesa e o bus

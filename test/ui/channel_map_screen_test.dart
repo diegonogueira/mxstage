@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mxwise/mixer/mixer_client.dart';
 import 'package:mxwise/ui/screens/channel_map_screen.dart';
+import 'package:mxwise/ui/widgets/channel_actions.dart';
 
 void main() {
   testWidgets('tela de mapear esconde canais sem nome e revela sob pedido',
@@ -11,11 +12,7 @@ void main() {
     final client = MixerClient();
     addTearDown(client.dispose);
     await tester.pumpWidget(MaterialApp(
-      home: ChannelMapScreen(
-        client: client,
-        onEdit: (_) {},
-        onInclusion: (_, _) {},
-      ),
+      home: ChannelMapScreen(client: client, actions: ChannelActions(client)),
     ));
     expect(find.text('Mapear canais'), findsOneWidget);
     expect(find.text('Mostrar canais sem nome (32)'), findsOneWidget);

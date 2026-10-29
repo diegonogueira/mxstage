@@ -29,4 +29,9 @@ void main() {
     expect(ChannelMapper.identify(name: 'DM'), InstrumentType.unknown);
     expect(ChannelMapper.identify(name: 'PC'), InstrumentType.unknown);
   });
+
+  test('canal sem nome nunca vira instrumento, mesmo com ícone de voz', () {
+    expect(ChannelMapper.identify(name: '', iconId: 1), InstrumentType.unknown);
+    expect(ChannelMapper.identify(name: 'Ch 29', iconId: 1), InstrumentType.unknown);
+  });
 }

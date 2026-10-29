@@ -18,6 +18,12 @@ class ChannelMapper {
     int? iconId,
     int? colorId,
   }) {
+    // 0. No name = no instrument. 28/10: an unnamed input whose icon said
+    //    "vocal" was a copy of the keys — the app put it on top as the lead
+    //    voice and the piano came in three times. Unnamed channels only count
+    //    once the musician says what they are (Mapear canais).
+    if (isUnnamed(name)) return InstrumentType.unknown;
+
     // 1. Name fuzzy match — the operator's own label
     final fromName = _fromName(name);
     if (fromName != InstrumentType.unknown) return fromName;
@@ -115,6 +121,12 @@ class ChannelMapper {
 
     return InstrumentType.unknown;
   }
+
+  static final _defaultName = RegExp(r'^ch\s*\d+$', caseSensitive: false);
+
+  /// Empty, or the app's placeholder "Ch 25".
+  static bool isUnnamed(String name) =>
+      name.trim().isEmpty || _defaultName.hasMatch(name.trim());
 
   static bool _any(String name, List<String> keywords) =>
       keywords.any((k) => name.contains(k));

@@ -240,6 +240,54 @@ class MixerClient extends ChangeNotifier {
 
   bool _isExcluded(int ch) => inclusionOf(ch) == ChannelInclusion.exclude;
 
+  // ── Pares estéreo ──────────────────────────────────────────────────────────
+  // Por mesa (a UI persiste). Um par é um instrumento só: medido junto, mesmo
+  // envio, conta uma vez. O link que a própria mesa tem (`/config/chlink`,
+  // só leitura) vira sugestão.
+  final Map<int, int> _links = {};
+  final Map<int, int> _mesaLinks = {};
+
+  /// Par estéreo do canal [ch], ou null.
+  int? partnerOf(int ch) => _links[ch];
+  Map<int, int> get channelLinks => Map.unmodifiable(_links);
+
+  /// Pares que a própria mesa tem linkados (lidos na conexão).
+  Map<int, int> get mesaLinks => Map.unmodifiable(_mesaLinks);
+
+  void setChannelLinks(Map<int, int> links) {
+    _links
+      ..clear()
+      ..addAll(links);
+    _eq.links = Map.of(_links);
+    _eqApplyNow();
+    notifyListeners();
+  }
+
+  /// Junta [a] e [b] num par estéreo (desfaz pares antigos de cada um).
+  void linkPair(int a, int b) {
+    if (a == b) return;
+    for (final c in [a, b]) {
+      final old = _links.remove(c);
+      if (old != null) _links.remove(old);
+    }
+    _links[a] = b;
+    _links[b] = a;
+    _eq.links = Map.of(_links);
+    _log.event('pair', {'a': a, 'b': b});
+    _eqApplyNow();
+    notifyListeners();
+  }
+
+  void unlinkPair(int ch) {
+    final other = _links.remove(ch);
+    if (other == null) return;
+    _links.remove(other);
+    _eq.links = Map.of(_links);
+    _log.event('unpair', {'a': ch, 'b': other});
+    _eqApplyNow();
+    notifyListeners();
+  }
+
   /// "Meu canal" (1-based) — o instrumento do dono deste retorno, base do
   /// papel ("mais eu" + referências). null = sem papel (balanço de plateia).
   int? get ownChannel => _eq.ownChannel;
@@ -630,6 +678,8 @@ class MixerClient extends ChangeNotifier {
       'unknown': r.unknown,
       'tooFew': r.tooFew,
       'partial': r.partial,
+      'duplicates': r.duplicates,
+      'baseUnheard': r.baseUnheard,
     });
     if (!r.ok) {
       notifyListeners();
@@ -743,6 +793,7 @@ class MixerClient extends ChangeNotifier {
 
     await _fetchChannelConfig();
     await _fetchBusNames();
+    await _fetchChannelLinks();
 
     // Subscribe to meters and start throttled UI refresh
     _subscribeMeter();
@@ -777,6 +828,9 @@ class MixerClient extends ChangeNotifier {
     _heard.clear();
     _inclusion.clear();
     _syncInclusion();
+    _links.clear();
+    _mesaLinks.clear();
+    _eq.links = {};
     _engine.boostDb.clear();
     _muted = false;
     _preMuteLevels.clear();
@@ -870,6 +924,15 @@ class MixerClient extends ChangeNotifier {
     }
   }
 
+  /// Read which odd/even pairs the mesa has stereo-linked (read only).
+  Future<void> _fetchChannelLinks() async {
+    if (_socket == null) return;
+    for (var ch = 1; ch < kInputChannelCount; ch += 2) {
+      _send(encodeOsc(chLinkAddress(ch), ',', []));
+      await Future.delayed(const Duration(milliseconds: 10));
+    }
+  }
+
   /// Re-read send levels for the current bus (used after [setBus]).
   Future<void> _fetchSendLevels() async {
     if (_socket == null) return;
@@ -891,6 +954,21 @@ class MixerClient extends ChangeNotifier {
     if (msg.address == '/xinfo' && msg.args.length >= 3) {
       _mixerName = msg.args[1] as String;
       _mixerModel = msg.args[2] as String;
+      notifyListeners();
+      return;
+    }
+
+    // Stereo link of a channel pair — /config/chlink/N-M ,i 0|1 (read only)
+    final linkMatch = kChLinkPattern.firstMatch(msg.address);
+    if (linkMatch != null && msg.args.isNotEmpty && msg.args[0] is num) {
+      final a = int.parse(linkMatch.group(1)!), b = int.parse(linkMatch.group(2)!);
+      if ((msg.args[0] as num).toInt() != 0) {
+        _mesaLinks[a] = b;
+        _mesaLinks[b] = a;
+      } else {
+        _mesaLinks.remove(a);
+        _mesaLinks.remove(b);
+      }
       notifyListeners();
       return;
     }

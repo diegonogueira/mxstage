@@ -198,15 +198,17 @@ void main() {
       expect(after[3], closeTo(before[3]!, 0.01));
     });
 
-    test('ajuste fino do calado é preservado; o do re-medido zera', () {
+    test('correção manual fica (calado e re-medido) — vira o reforço do canal', () {
       final e = equalized();
       final b = e.targetSendsDb(instr, preset);
       e.setManualSend(3, b[3]! + 3, instr, preset);
-      e.setManualSend(2, b[2]! + 3, instr, preset);
+      e.setManualSend(2, b[2]! - 4, instr, preset);
+      expect(e.boostDb[3], closeTo(3, 0.01));
+      expect(e.boostDb[2], closeTo(-4, 0.01));
       reequalized(e, 3);
       final a = e.targetSendsDb(instr, preset);
       expect(a[3], closeTo(b[3]! + 3, 0.01));
-      expect(a[2], closeTo(b[2]!, 0.01));
+      expect(a[2], closeTo(b[2]! - 4, 0.01));
     });
 
     test('desligar e equalizar de novo começa do zero', () {
@@ -355,6 +357,90 @@ void main() {
       expect(r.parkedOff, [3]);
       expect(r.unknown, [6]);
       expect(r.balanced, isNot(contains(3)));
+    });
+  });
+
+  group('culto 28/10: base, estéreo, teto', () {
+    EqualizerEngine run(List<double> five,
+        {List<InstrumentType>? types, void Function(EqualizerEngine)? setup}) {
+      final e = EqualizerEngine();
+      setup?.call(e);
+      e.startMeasure();
+      for (var t = 0; t < 75; t++) {
+        e.addSample(_frame(five));
+      }
+      e.finish(_sendsAt(0.0), instruments: types ?? instr, preset: preset);
+      return e;
+    }
+
+    test('meu instrumento é a base: fica no topo (0 dB) e o resto em volta', () {
+      final e = run(_play, setup: (e) => e.ownChannel = 2); // teclado
+      final s = e.targetSendsDb(instr, preset);
+      expect(s[2], closeTo(0, 0.01));
+    });
+
+    test('a base vale mesmo quando ela não tocou nesta equalização', () {
+      final e = run(_play, setup: (e) => e.ownChannel = 2);
+      final before = e.targetSendsDb(instr, preset)[2]!;
+      e.startMeasure();
+      for (var t = 0; t < 75; t++) {
+        e.addSample(_frame(List.of(_play)..[1] = -90)); // teclado calado
+      }
+      final r = e.finish(_sendsAt(0.0), instruments: instr, preset: preset);
+      expect(r.baseUnheard, isFalse); // lembrado
+      expect(e.targetSendsDb(instr, preset)[2], closeTo(before, 0.01));
+    });
+
+    test('base nunca ouvida → avisa', () {
+      final e = EqualizerEngine()..ownChannel = 2;
+      e.startMeasure();
+      for (var t = 0; t < 75; t++) {
+        e.addSample(_frame(List.of(_play)..[1] = -90));
+      }
+      final r = e.finish(_sendsAt(0.0), instruments: instr, preset: preset);
+      expect(r.baseUnheard, isTrue);
+    });
+
+    test('reforço −9 funciona mesmo com o canal batendo no teto', () {
+      final types = List.of(instr)..[5] = InstrumentType.acoustic;
+      final e = run([..._play, -55.0], types: types); // violão medido baixinho
+      final at = e.targetSendsDb(types, preset)[6]!;
+      expect(at, closeTo(10, 0.01)); // no teto
+      e.boostDb[6] = -9;
+      expect(e.targetSendsDb(types, preset)[6], closeTo(1, 0.01));
+    });
+
+    test('par estéreo: um instrumento, mesmo envio, conta uma vez', () {
+      final types = List.of(instr)..[5] = InstrumentType.keys;
+      final e = run([-24, -28, -20, -26, -18, -31],
+          types: types, setup: (e) => e.links = {2: 6, 6: 2});
+      final s = e.targetSendsDb(types, preset);
+      expect(s[6], closeTo(s[2]!, 0.01));
+      expect(e.levelDb[6], closeTo(-28, 0.01)); // o lado mais forte
+    });
+
+    test('canal cópia de outro é apontado como duplicado', () {
+      final types = List.of(instr)..[5] = InstrumentType.leadVocal;
+      final e = EqualizerEngine()..startMeasure();
+      for (var t = 0; t < 75; t++) {
+        final k = -28.0 + (t % 5);
+        e.addSample(_frame([-24, k, -20, -26, -18, k + 0.2]));
+      }
+      final r = e.finish(_sendsAt(0.0), instruments: types, preset: preset);
+      expect(r.duplicates, [
+        [2, 6]
+      ]);
+    });
+
+    test('canal que tocou pouco na janela não é medido (fica como estava)', () {
+      final types = List.of(instr)..[5] = InstrumentType.acoustic;
+      final e = EqualizerEngine()..startMeasure();
+      for (var t = 0; t < 75; t++) {
+        e.addSample(_frame([..._play, t < 15 ? -45.0 : -90.0])); // 20% da janela
+      }
+      final r = e.finish(_sendsAt(-28.0), instruments: types, preset: preset);
+      expect(r.unheard, contains(6));
+      expect(e.targetSendsDb(types, preset)[6], -28.0);
     });
   });
 
